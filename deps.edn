@@ -8,10 +8,39 @@
  ;; directly (not only under :dev) so a bare `clojure -M:test` works
  ;; offline inside the monorepo checkout without depending on
  ;; langgraph's own transitive git/sha pin being fetchable.
+ ;;
+ ;; Engine-under-the-hood rewiring (this build): four shared/real
+ ;; infrastructure deps replace formerly-bespoke internal
+ ;; implementations, same sibling-checkout `:local/root` convention as
+ ;; every dep above (matches `cloud-itonami-isic-5820`'s own
+ ;; `io.github.kotoba-lang/crm` entry) --
+ ;;   - `io.github.cloud-itonami/cloud-itonami-regulatory-tracker` --
+ ;;     `hygaccess.regulatory` now delegates to this shared library's
+ ;;     `cloud-itonami.regulatory-tracker.core` instead of its own
+ ;;     hand-rolled stage table.
+ ;;   - `io.github.kotoba-lang/dcs` -- `hygaccess.mes` now backs its
+ ;;     mock telemetry source on `dcs.ports/IFieldIO` instead of a
+ ;;     bespoke `MESSource` protocol.
+ ;;   - `io.github.kotoba-lang/kami-app-hygaccess-plant` -- the mock
+ ;;     IFieldIO's mixing-homogeneity tag reads through this repo's own
+ ;;     real, tested CFD solve (`kami-app-hygaccess-plant.mixing/
+ ;;     run-mixing-scenario`) instead of a canned/hand-picked number.
+ ;;   - `io.github.kotoba-lang/crm` -- `hygaccess.registry`'s
+ ;;     fulfillment-status transition table now delegates to
+ ;;     `kotoba.crm.pipeline`'s generic ordered-stage/exit-stage
+ ;;     validator instead of a bespoke hand-rolled table.
  :deps {io.github.kotoba-lang/langgraph
         {:local/root "../../kotoba-lang/langgraph"}
         io.github.kotoba-lang/langchain
-        {:local/root "../../kotoba-lang/langchain"}}
+        {:local/root "../../kotoba-lang/langchain"}
+        io.github.cloud-itonami/cloud-itonami-regulatory-tracker
+        {:local/root "../cloud-itonami-regulatory-tracker"}
+        io.github.kotoba-lang/dcs
+        {:local/root "../../kotoba-lang/dcs"}
+        io.github.kotoba-lang/kami-app-hygaccess-plant
+        {:local/root "../../kotoba-lang/kami-app-hygaccess-plant"}
+        io.github.kotoba-lang/crm
+        {:local/root "../../kotoba-lang/crm"}}
  :aliases
  {;; offline workspace dev -- pin transitive langchain to local checkout
   ;; (kept for parity with sibling actors' deps.edn shape; redundant

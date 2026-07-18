@@ -49,8 +49,17 @@
   (no-toxic-gas-formulation): never trust a proposal's own
   self-reported weight/status/concentration/claim-substantiation/
   market-approval/channel-partner-licensing when the inputs needed to
-  recompute it independently are already on record."
-  (:require [clojure.set :as set]))
+  recompute it independently are already on record.
+
+  ENGINE REWIRE (this build): the fulfillment-status transition table's
+  core ordered-stage validity now DELEGATES to `kotoba.crm.pipeline`
+  (`kotoba-lang/crm`)'s generic ordered-stage/exit-stage engine -- the
+  same technical commons `cloud-itonami.regulatory-tracker.core` (see
+  `hygaccess.regulatory`) is itself built on -- instead of a bespoke
+  hand-rolled table. See `fulfillment-transition-valid?` below for the
+  one additional domain-specific layer kept on top."
+  (:require [clojure.set :as set]
+            [kotoba.crm.pipeline :as pipeline]))
 
 ;; ----------------------------- active ingredients -----------------------------
 
@@ -700,25 +709,76 @@
         (<= (double quantity) (double max-plausible-order-quantity)))))
 
 ;; ----------------------------- fulfillment-status state machine -----------------------------
+;;
+;; ENGINE REWIRE (this build): the core ordered-stage/exit-stage
+;; validity now DELEGATES to `kotoba.crm.pipeline` (`kotoba-lang/crm`)'s
+;; generic pipeline engine -- the SAME technical commons
+;; `cloud-itonami.regulatory-tracker.core` (see `hygaccess.regulatory`)
+;; itself reuses -- instead of a bespoke hand-rolled transition table.
+
+(def fulfillment-ordered-stages
+  "`:pending` -> `:packed` -> `:shipped` -> `:delivered`, the linear
+  happy-path chain handed to `kotoba.crm.pipeline` as its own
+  `ordered-stages` argument. `:delivered` is `kotoba.crm.pipeline`'s
+  own 'reached the end, successfully' terminal stage (its last entry)."
+  [:pending :packed :shipped :delivered])
+
+(def fulfillment-exit-stages
+  "`:cancelled` -- an ABANDONMENT outcome, handed to `kotoba.crm.
+  pipeline` as its own `exit-stages` argument. Per that library's own
+  semantics, an exit-stage is reachable from ANY non-terminal ordered
+  stage, which on its own would also permit `:shipped` -> `:cancelled`
+  (`:shipped` is not itself terminal -- it still transitions forward to
+  `:delivered`). This actor's own domain rule is STRICTER than that
+  generic default (see `fulfillment-transition-valid?` below for the
+  additional layer enforcing it) -- once `:shipped`, the physical
+  parcel is already in transit; 'cancelling' after dispatch is a
+  real-world return/refusal process, not a same-op cancellation."
+  #{:cancelled})
 
 (def fulfillment-statuses
   #{:pending :packed :shipped :delivered :cancelled})
 
 (def fulfillment-transitions
-  "Closed ground-truth transition table: `:pending` -> `:packed` ->
-  `:shipped` -> `:delivered`, OR `:cancelled` from any PRE-SHIPPED state
-  (`:pending` or `:packed`). Once `:shipped`, the physical parcel is
-  already in transit -- 'cancelling' after dispatch is a real-world
-  return/refusal process, not a same-op cancellation, so this table
-  deliberately does NOT allow `:shipped`/`:delivered` -> `:cancelled`."
-  {:pending   #{:packed :cancelled}
-   :packed    #{:shipped :cancelled}
-   :shipped   #{:delivered}
-   :delivered #{}
-   :cancelled #{}})
+  "Closed transition table, DERIVED from `kotoba.crm.pipeline/next-
+  stages` over `fulfillment-ordered-stages`/`fulfillment-exit-stages` --
+  kept as a map for backward-compat/introspection, but the ENGINE
+  decision now lives in the shared library. NOTE: this raw derived
+  table alone still reflects the shared library's own generic 'exit
+  from any non-terminal stage' default (i.e. it lists `:shipped ->
+  #{:cancelled :delivered}`) -- the STRICTER 'no cancellation once
+  shipped' domain rule this actor actually enforces is NOT encoded in
+  this table; it is layered on top by `fulfillment-transition-valid?`
+  below (the fn every caller/governor check actually calls), so read
+  this map as 'structurally reachable per the shared engine', not as
+  this actor's own final word on validity."
+  (into {} (map (fn [s] [s (pipeline/next-stages fulfillment-ordered-stages fulfillment-exit-stages s)]))
+        fulfillment-statuses))
 
-(defn fulfillment-transition-valid? [from to]
-  (boolean (contains? (get fulfillment-transitions from #{}) to)))
+(defn fulfillment-transition-valid?
+  "Is `from` -> `to` an allowed single-step fulfillment-status
+  transition? Delegates the core ordered-stage/exit-stage structural
+  validity to `kotoba.crm.pipeline/valid-transition?` (ADDITIVE reuse,
+  not a rewrite of that engine), then layers ONE additional,
+  hygiene-access-specific domain constraint on top: `:cancelled` is
+  valid ONLY from a PRE-SHIPPED state (`:pending`/`:packed`), narrower
+  than `kotoba.crm.pipeline`'s own generic 'any non-terminal stage'
+  exit-stage default (see `fulfillment-exit-stages` docstring for why).
+  This mirrors exactly how `cloud-itonami.regulatory-tracker.core`'s own
+  docs describe a caller staying stricter than the shared engine: 'a
+  caller whose own ... track genuinely needs the stricter rule can layer
+  that ADDITIONAL check in its own governor' -- unlike
+  `hygaccess.regulatory` (which accepted the shared library's own looser
+  default, see that ns docstring), THIS domain rule is kept strict
+  because existing test coverage
+  (`fulfillment-transition-cancelled-only-from-pre-shipped-states` in
+  `registry_test.cljc`) already asserts it, and a dispatched parcel is a
+  genuinely different real-world state from an undispatched order."
+  [from to]
+  (boolean
+   (and (pipeline/valid-transition? fulfillment-ordered-stages fulfillment-exit-stages from to)
+        (or (not= to :cancelled)
+            (contains? #{:pending :packed} from)))))
 
 ;; ----------------------------- draft record construction -----------------------------
 

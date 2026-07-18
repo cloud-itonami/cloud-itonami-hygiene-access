@@ -396,7 +396,12 @@
        :cites [] :effect :noop :stake nil :confidence 0.0})))
 
 (defn llm-advisor
-  "An advisor backed by a `langchain.model/ChatModel` (real inference)."
+  "An advisor backed by a `langchain.model/ChatModel` (real inference).
+  `mock-advisor` remains the default everywhere (including every test in
+  this repo); `llm-advisor` is opt-in only -- pass any `ChatModel`
+  (`model/anthropic-model`, `model/openai-model`, `model/mock-model` for
+  offline tests, or `murakumo-chat-model` below for this workspace's own
+  fleet-main convention). `gen-opts` is forwarded to `-generate`."
   ([chat-model] (llm-advisor chat-model {}))
   ([chat-model gen-opts]
    (reify Advisor
@@ -407,6 +412,104 @@
                                               "\n事実: " (pr-str (facts-for st req)))}]
              resp (model/-generate chat-model msgs gen-opts)]
          (parse-proposal (:content resp)))))))
+
+;; ----------------------------- real LLM wiring: murakumo-main alias (opt-in only) -----------------------------
+;;
+;; Per this workspace's fleet-wide convention (root CLAUDE.md "LLM モデル
+;;選択 -- murakumo-main alias", ADR-2607173100): never hardcode a
+;; concrete model id anywhere a model choice needs to track a live fleet
+;; swap. `murakumo-chat-model` below is the REAL, opt-in alternative to
+;; `mock-advisor` this task asked for -- it constructs a real
+;; `langchain.model/ChatModel` (via `model/anthropic-model`, since
+;; `api.murakumo.cloud/v1/messages` speaks the Anthropic Messages API
+;; shape) pointed at whichever endpoint/model this workspace's own
+;; mandated resolution order picks, then `llm-advisor` above uses it
+;; exactly like any other `ChatModel` -- no change to `llm-advisor`
+;; itself was needed, only this constructor.
+;;
+;; Resolution order (mirrors CLAUDE.md's "①env/引数 override →
+;; ②murakumo-main alias 解決 → ③fallback は「endpoint のみ」を焼く"
+;; verbatim, and reuses BOTH access patterns that section documents):
+;;   1. `:override-endpoint`/`:override-model` (explicit caller/env
+;;      choice, e.g. pointing dev at a local Ollama) -- never
+;;      second-guessed here.
+;;   2. `murakumo-main` KV alias resolution: GET `murakumo-alias-url` ->
+;;      `{:endpoint .. :alias-for ..}`, then call THAT resolved endpoint
+;;      directly with `:model (:alias-for ..)` -- the same discovery
+;;      step `~/.gftd/run-itonami-qwen36-tick.cljs`'s own
+;;      `resolve-main-model` performs (ADR-2607172900).
+;;   3. If step 2 is unreachable/fails: fall back to the stable
+;;      `murakumo-messages-url` gateway with the LITERAL alias string
+;;      `"murakumo-main"` as `:model` -- the worker resolves it
+;;      server-side (CLAUDE.md: "`api.murakumo.cloud/v1/messages` へは
+;;      `model=\"murakumo-main\"` を送ってよい"). This is the "endpoint
+;;      only" fallback -- it never bakes in a CONCRETE model id, only
+;;      the alias name itself, so it keeps tracking whatever model is
+;;      actually live behind the alias.
+;;
+;; This namespace performs no I/O of its own here either -- `http-fn`/
+;; `json-write`/`json-read` are host-injected capabilities the CALLER
+;; supplies (fetch on a browser/WASM host, a JVM HTTP client, node http
+;; on nbb), the SAME posture `langchain.model` itself documents ("this
+;; library performs no I/O itself"). `mock-advisor` needs none of this
+;; and is never affected by it.
+
+(def murakumo-alias-url
+  "https://api.murakumo.cloud/infer/models/murakumo-main")
+
+(def murakumo-messages-url
+  "https://api.murakumo.cloud/v1/messages")
+
+(defn resolve-murakumo-endpoint
+  "Resolve `{:endpoint .. :model ..}` for `murakumo-chat-model` to
+  target, per the resolution order documented above. Pure decision
+  logic over injected `http-fn`/`json-read` -- safe to unit-test without
+  any live network call (see `advisor_test.cljc`): with no `http-fn`
+  injected, or with `:override-endpoint`+`:override-model` both
+  supplied, this fn never attempts I/O at all."
+  [{:keys [http-fn json-read override-endpoint override-model]}]
+  (cond
+    (and override-endpoint override-model)
+    {:endpoint override-endpoint :model override-model}
+
+    (not (and http-fn json-read))
+    {:endpoint murakumo-messages-url :model "murakumo-main"}
+
+    :else
+    (or (try
+          (let [{:keys [status body]} (http-fn {:url murakumo-alias-url :method :get})]
+            (when (and status (<= 200 status 299))
+              (let [d (json-read body)]
+                (when (:endpoint d)
+                  {:endpoint (:endpoint d) :model (or (:alias-for d) "murakumo-main")}))))
+          (catch #?(:clj Exception :cljs :default) _ nil))
+        {:endpoint murakumo-messages-url :model "murakumo-main"})))
+
+(defn murakumo-chat-model
+  "A real, opt-in `langchain.model/ChatModel` targeting this workspace's
+  `murakumo-main` fleet alias -- the concrete REAL-LLM path `llm-advisor`
+  above can be wired to. NEVER constructed by a test in this repo (tests
+  use `mock-advisor`, the safe default); this is an opt-in alternative a
+  live caller (a demo run, a scheduled routine) may choose.
+
+  opts: `{:http-fn .. :json-write .. :json-read .. :api-key ..
+  :override-endpoint .. :override-model ..}` -- `:http-fn`/`:json-write`/
+  `:json-read` are host-injected capabilities (see `langchain.model` ns
+  docstring: fetch on a WASM/browser host, an HTTP client on the JVM);
+  `:api-key` is forwarded as-is (murakumo's own gateway may not require
+  one for the keyless public routes this workspace's ADR-2607172700/2800
+  document -- omit it when not needed). This fn performs no I/O itself;
+  it only decides WHICH endpoint/model `langchain.model/anthropic-model`
+  should target, via `resolve-murakumo-endpoint` above (the Anthropic
+  Messages API shape is correct here: `api.murakumo.cloud/v1/messages`
+  speaks that same shape)."
+  [{:keys [http-fn json-write json-read api-key] :as opts}]
+  (let [{:keys [endpoint model]} (resolve-murakumo-endpoint opts)]
+    (model/anthropic-model
+     (cond-> {:model model :url endpoint :http-fn http-fn}
+       api-key (assoc :api-key api-key)
+       json-write (assoc :json-write json-write)
+       json-read (assoc :json-read json-read)))))
 
 (defn trace
   "Decision-grounded audit record -- persisted to the :audit channel."

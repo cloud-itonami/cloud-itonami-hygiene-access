@@ -58,7 +58,8 @@
   happy-path actuation' discipline every sibling since establishes."
   (:require [langgraph.graph :as g]
             [hygaccess.store :as store]
-            [hygaccess.operation :as op]))
+            [hygaccess.operation :as op]
+            [hygaccess.mes :as mes]))
 
 (def coordinator {:actor-id "coord-1" :actor-role :hygiene-access-coordinator :phase 3})
 
@@ -141,13 +142,14 @@
       (println "-- human coordinator approves --")
       (println (approve! actor "t7")))
 
-    (println "== record-mes-reading mes-1 on batch-001 (clean, verified batch -> phase-3 auto-commit, mirrors log-production-batch's own administrative-logging posture) ==")
-    (println (exec-op actor "t8"
-                       {:op :record-mes-reading :effect :propose :subject "mes-1"
-                        :value {:batch-id "batch-001" :temperature-c 28.0 :ph 11.5
-                                :mixing-rpm 100.0 :mixing-homogeneity-cov-pct 2.1
-                                :source :mock-mes}}
-                       coordinator))
+    (println "== record-mes-reading mes-1 on batch-001, read through hygaccess.mes's dcs.ports/IFieldIO mock (mixing-homogeneity-cov-pct is the REAL kami-app-hygaccess-plant CFD solve result, not a canned number) -- clean, verified batch -> phase-3 auto-commit, mirrors log-production-batch's own administrative-logging posture ==")
+    (let [plant-io (mes/mock-plant-io)
+          reading (mes/batch-telemetry-reading plant-io "batch-001")]
+      (println "  real CFD-derived reading:" reading)
+      (println (exec-op actor "t8"
+                         {:op :record-mes-reading :effect :propose :subject "mes-1"
+                          :value reading}
+                         coordinator)))
 
     (println "== record-regulatory-submission-status reg-1 (IN/water-purification-drops draft -> counsel-review, escalates, approve) ==")
     (let [r (exec-op actor "t9"

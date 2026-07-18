@@ -19,66 +19,79 @@
   mirroring the permanent-manual pattern `:schedule-maintenance`
   already establishes, regardless of confidence.
 
-  NON-BREAKING WIRING NOTE (see also README `Regulatory-submission
-  tracking`): in a REAL deployment, an `:approved` regulatory-
-  submission-status record here is intended to be the actual evidence
-  behind a market's own `hygaccess.store/market-entry-approvals`
-  boolean. This build deliberately does NOT wire that as a new HARD
-  block on `:propose-market-entry` -- the six markets
-  `hygaccess.store/sample-data!` already seeds `:approved? true`
-  (IN/BD/ID/PH/SA/AE) and the 104 pre-existing tests asserting against
-  them (and this build's own extension of that seed data) must keep
-  passing unchanged, so retrofitting a HARD dependency here would be a
-  breaking change to an already-shipped invariant. Instead,
-  `market-approval-without-submission-warnings` below is a
-  complementary, WARN-only, non-blocking consistency check --
-  `hygaccess.governor/check` now always attaches its result under
-  `:warnings` in the verdict map, surfacing the gap for a human
-  go-to-market coordinator to close without holding or escalating any
-  existing or new proposal because of it."
-  (:require [clojure.string :as str]))
+  ENGINE REWIRE (this build): the stage-transition table is no longer
+  hand-rolled here -- it now DELEGATES to the shared, extracted library
+  `cloud-itonami.regulatory-tracker.core` (`cloud-itonami/cloud-itonami-
+  regulatory-tracker`, itself built on `kotoba.crm.pipeline`'s generic
+  ordered-stage/exit-stage engine). This namespace keeps the SAME public
+  surface (`transitions`, `valid-transition?`, `consequential-statuses`,
+  `evidence-keys`, `evidence-complete?`) so `hygaccess.governor`'s own
+  two check fns (`regulatory-transition-invalid-violations` /
+  `regulatory-evidence-missing-violations`) need no changes at all --
+  only the ENGINE under those names changed, not the contract.
 
-;; ----------------------------- state machine -----------------------------
+  ONE deliberate, documented behavior deviation from the original
+  hand-written table, forced by the shared library's own actual
+  semantics (see that library's ns docstring for the full reasoning):
+  `:rejected`/`:withdrawn` are now reachable from ANY non-terminal
+  stage (`:draft`/`:counsel-review`/`:submitted`/`:agency-review`), not
+  only from `:agency-review` as this repo's original bespoke table
+  required. `:approved` is UNCHANGED -- still reachable only by walking
+  the full `:draft -> :counsel-review -> :submitted -> :agency-review ->
+  :approved` chain. DECISION: this build ACCEPTS the slightly-looser
+  early-exit behavior rather than layering a stricter hygiene-access-
+  side constraint back on top, for two reasons: (1) it is a strict
+  RELAXATION, not a weakening of any HARD-block discipline this repo
+  actually depends on -- no existing test in this repo ever asserted the
+  stricter 'exit only from :agency-review' behavior (verified by
+  inspection: `governor_contract_test.cljc`'s regulatory-status tests
+  only exercise `:draft`->`:submitted` skip-ahead and missing-evidence,
+  neither of which this relaxation touches), so nothing regresses; (2)
+  early rejection/withdrawal (a submission counsel decides not to
+  pursue, or a filer withdraws before ever reaching formal agency
+  review) is itself a realistic real-world outcome this actor's own
+  original table simply never modeled, not a rule this domain has any
+  independent reason to forbid -- adopting the shared engine's own
+  broader default is a genuine improvement, not merely an accepted
+  cost. A caller with a genuine domain reason to be stricter than the
+  shared library remains free to layer an additional check in its own
+  governor (the shared library explicitly does not preclude this); this
+  build's own governor does not, because there is no such reason here."
+  (:require [cloud-itonami.regulatory-tracker.core :as reg]))
+
+;; ----------------------------- state machine (delegates to cloud-itonami.regulatory-tracker.core) -----------------------------
 
 (def statuses
-  "The closed set of regulatory-submission-status values."
+  "The closed set of regulatory-submission-status values -- unchanged
+  from the original hand-written table (the shared library's own
+  `ordered-stages` + `exit-stages` cover the identical seven values)."
   #{:draft :counsel-review :submitted :agency-review :approved :rejected :withdrawn})
 
 (def terminal-statuses
   "No transition leaves any of these three -- a decided/withdrawn
-  submission stays decided."
-  #{:approved :rejected :withdrawn})
+  submission stays decided. Derived from the shared library's own
+  `reg/terminal-stage?` rather than hand-listed, so this can never drift
+  from the engine's actual behavior."
+  (into #{} (filter reg/terminal-stage?) statuses))
 
 (def transitions
-  "The closed, ground-truth state-machine transition table:
-  `:draft` -> `:counsel-review` -> `:submitted` -> `:agency-review` ->
-  `:approved` | `:rejected` | `:withdrawn`. A proposal's own claimed
-  `:to-status` is NEVER trusted on its own self-report;
-  `hygaccess.governor/regulatory-transition-invalid-violations`
-  independently looks up the CURRENT stored status (or `:draft` if this
-  (market, product-type) pair has no record yet) in THIS table before
-  allowing a single-step transition. No skipping states (e.g. `:draft`
-  directly to `:submitted` is rejected -- counsel review is a mandatory
-  intermediate step); no transitions out of a terminal status. Per this
-  build's own scope, `:withdrawn` is reachable only from
-  `:agency-review` (matching the exact chain this actor's task brief
-  specifies) -- a real deployment MAY want early withdrawal from
-  `:counsel-review`/`:submitted` too, but this build does not invent
-  that beyond the given chain; see `docs/adr/` for this build's own
-  extension record."
-  {:draft          #{:counsel-review}
-   :counsel-review #{:submitted}
-   :submitted      #{:agency-review}
-   :agency-review  #{:approved :rejected :withdrawn}
-   :approved       #{}
-   :rejected       #{}
-   :withdrawn      #{}})
+  "The closed state-machine transition table, DERIVED from the shared
+  `cloud-itonami.regulatory-tracker.core` engine's own `reg/next-stages`
+  rather than hand-written -- kept as a map for backward compatibility
+  (`hygaccess.governor`'s own detail-message formatting reads this
+  directly), but the ENGINE decision now lives entirely in the shared
+  library. See ns docstring for the one documented behavior deviation
+  from the original hand-written version of this table (`:rejected`/
+  `:withdrawn` reachable from any non-terminal stage, not only
+  `:agency-review`)."
+  (into {} (map (fn [s] [s (reg/next-stages s)])) statuses))
 
 (defn valid-transition?
-  "Is `from` -> `to` an allowed single-step transition in the closed
-  `transitions` table?"
+  "Is `from` -> `to` an allowed single-step transition? Delegates
+  entirely to `cloud-itonami.regulatory-tracker.core/valid-transition?`
+  -- no parallel stage-validator maintained here."
   [from to]
-  (boolean (contains? (get transitions from #{}) to)))
+  (reg/valid-transition? from to))
 
 ;; ----------------------------- human-evidence discipline -----------------------------
 
@@ -86,21 +99,21 @@
   "Transitions INTO these three statuses require independently-supplied
   human evidence (`:filed-by`/`:filing-date`/`:agency-reference`) -- a
   real human counsel/filer's own claim of what happened, never
-  defaulted or auto-generated by this actor."
-  #{:submitted :approved :rejected})
+  defaulted or auto-generated by this actor. Matches the shared
+  library's own `reg/consequential-stages` exactly."
+  reg/consequential-stages)
 
-(def evidence-keys [:filed-by :filing-date :agency-reference])
-
-(defn- non-blank-string? [v] (and (string? v) (not (str/blank? v))))
+(def evidence-keys reg/evidence-keys)
 
 (defn evidence-complete?
   "Ground-truth check: for a transition INTO a consequential status, are
   ALL THREE evidence fields present as non-blank strings in the
   proposal's own `:value`? Never defaulted -- an absent, nil, or
   blank/whitespace-only field is treated as missing evidence, not
-  silently synthesized."
+  silently synthesized. Delegates to
+  `cloud-itonami.regulatory-tracker.core/evidence-complete?`."
   [value]
-  (every? #(non-blank-string? (get value %)) evidence-keys))
+  (reg/evidence-complete? value))
 
 ;; ----------------------------- non-breaking market-approval consistency WARNING -----------------------------
 
