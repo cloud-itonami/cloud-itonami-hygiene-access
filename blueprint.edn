@@ -1,0 +1,63 @@
+{:itonami.blueprint/id "cloud-itonami-hygiene-access"
+ :itonami.blueprint/name "Affordable hygiene/disinfectant active-ingredient commercialization for water-scarce and poor-sanitation-infrastructure markets"
+ :itonami.blueprint/domain :hygiene-disinfectant/commercialization
+ :itonami.blueprint/license "AGPL-3.0-or-later"
+ :itonami.blueprint/social-impact [:public-health :water-safety :affordability :consumer-safety]
+ :itonami.blueprint/governor :hygiene-access-operations-governor
+ :itonami.blueprint/robotics false
+ :itonami.blueprint/required-technologies [:identity :forms :dmn :bpmn :audit-ledger]
+ :itonami.blueprint/optional-technologies []
+ :itonami.blueprint/status :public-oss
+ :itonami.blueprint/maturity :implemented
+ :itonami.blueprint/implemented-slice
+ "HygieneAccessAdvisor ⊣ Hygiene Access Operations Governor, langgraph-clj
+ StateGraph, append-only audit ledger. A COORDINATION/PROPOSAL-LAYER
+ business actor -- NOT a real chemical-manufacturing control system,
+ NOT a real regulatory or medical authority, and NOT literal
+ real-world sales infrastructure -- that commercializes two low-cost
+ hygiene/disinfectant active ingredients (sodium hypochlorite NaOCl
+ and isopropylmethylphenol IPMP) as affordable products for
+ water-scarce / poor-sanitation-infrastructure markets (India,
+ Gulf/Arabia/MENA, South & Southeast Asia), covering the full chain:
+ formulation-batch logging, packaging design, market-entry/pricing
+ (go-to-market), marketing-claim substantiation, and
+ distribution-channel coordination. Seven ops
+ (`:log-production-batch` / `:schedule-maintenance` /
+ `:flag-safety-concern` / `:coordinate-shipment` /
+ `:propose-packaging-design` / `:propose-market-entry` /
+ `:propose-marketing-claim`), all `:effect :propose` only. Nineteen
+ concrete HARD governor checks (plus one SOFT confidence/high-stakes
+ gate) elaborate this blueprint's own invariants: propose-only effect,
+ closed op allowlist, closed proposal-effect allowlist (no direct
+ formulation/filling-line-equipment control), permanent
+ line-actuate block, permanent certification-decision block (this
+ actor never itself grants a chemical-safety/medical/regulatory
+ certification -- e.g. India CDSCO/BIS, GCC conformity bodies, ASEAN
+ member-state regulators), permanent no-toxic-co-formulation block
+ (sodium hypochlorite + an acid-bearing or ammonia-bearing
+ co-ingredient is a structurally unrepresentable toxic chlorine-gas/
+ chloramine-gas hazard, mirroring etzhayyim/com-etzhayyim-yakushi's
+ own G22), independent formulation/filling-line-equipment
+ verification/registration before maintenance scheduling, independent
+ batch verification/registration before shipment coordination,
+ independent shipment-weight recompute against the batch's own logged
+ weight, double-schedule guard, product-type validation, active-
+ ingredient-authorized-for-product-type validation, active-ingredient
+ concentration efficacy-window validation (G21 analog, per-product-
+ type closed window: sodium-hypochlorite 0.5-1.5% for
+ water-purification-drops / 0.05-0.5% for surface-disinfectant,
+ isopropylmethylphenol 0.1-0.3% for antibacterial-soap), off-spec-rate
+ plausibility validation, BOP-appropriate packaging-format validation,
+ independent market-entry-country-approval validation (ground truth,
+ not self-report -- any real deployment would still need the
+ applicable local regulatory approval this actor does not itself
+ grant), independent per-product-type affordability-price-ceiling
+ validation, independent distribution-channel-partner-licensing
+ validation, and independent marketing-claim-substantiation validation
+ against a closed WHO/CDC-style claim set (a first-class ethical
+ guardrail against unsubstantiated health claims to a vulnerable
+ population). Safety-concern flagging ALWAYS escalates to a human
+ go-to-market coordinator, as do market-entry and marketing-claim
+ proposals (always high-stakes, never in any phase's auto set);
+ `:log-production-batch` is the only op eligible to auto-commit, and
+ only at phase 3 when governor-clean."}

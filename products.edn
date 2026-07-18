@@ -1,0 +1,96 @@
+;; products.edn -- the commercial go-to-market catalog for
+;; cloud-itonami-hygiene-access. Four representative SKUs spanning both
+;; active ingredients and all three product types. Loosely mirrors
+;; `etzhayyim/com-etzhayyim-yakushi`'s own `products.edn` `:product/*`
+;; vocabulary (`:product/id` `:product/title` `:product/price-minor`
+;; `:product/currency`) where it transfers, extended with this actor's
+;; own commercial fields under the `:hygaccess.product/*` namespace
+;; (formulation / packaging / target-market / claim / channel).
+;;
+;; INTERNAL CONSISTENCY: every SKU's declared
+;; `:hygaccess.product/concentration-pct` falls within
+;; `hygaccess.registry/efficacy-window-pct`'s own closed window for its
+;; `[active product-type]` pair; every `:product/price-minor` falls at
+;; or under `hygaccess.registry/price-ceiling-minor`'s own ceiling for
+;; its product type; every `:hygaccess.product/packaging-format` is a
+;; member of `hygaccess.registry/valid-packaging-formats`; every
+;; `:hygaccess.product/claim` is a verbatim member of
+;; `hygaccess.registry/substantiated-claims` for its product type; and
+;; every `:hygaccess.product/channel` is a member of
+;; `hygaccess.registry/valid-distribution-channels`. This file is
+;; designed to pass the same governor logic `hygaccess.governor-
+;; contract-test` exercises, conceptually -- it does not ship a
+;; formulation/price/claim/format this actor's own checks would reject.
+;;
+;; TARGET MARKETS vs MARKET APPROVAL: `:hygaccess.product/target-
+;; countries` below is a go-to-market ROADMAP (aspirational + already-
+;; approved markets), not a claim that every listed country is already
+;; independently approved in the store's `market-entry-approvals`
+;; ground-truth table. Per the seeded sample data
+;; (`hygaccess.store/sample-data!`), IN/BD/ID/PH/SA/AE are
+;; `:approved? true`; PK/EG are `:approved? false` (pending local
+;; regulatory review). A real `:propose-market-entry` proposal against
+;; a pending country is correctly HARD-held by
+;; `hygaccess.governor/market-not-approved-violations` until that
+;; review completes -- this actor does not itself grant regulatory
+;; market access (see README `What this actor does NOT do`).
+
+[{:product/id "int.hygaccess.water-purification-drops"
+  :product/title "Hygiene Access 次亜塩素酸ナトリウム水道水浄化用ドロップ 1.0% (WHO Safe Water System 方式)"
+  :product/price-minor 350000
+  :product/currency "USDC"
+  :hygaccess.product/product-type :water-purification-drops
+  :hygaccess.product/active :sodium-hypochlorite
+  :hygaccess.product/concentration-pct 1.0
+  :hygaccess.product/packaging-format :small-bottle-50ml
+  :hygaccess.product/packaging-note "50ml dropper bottle, one stock-solution bottle doses roughly on the order of 1,000L of household drinking water at label-specified drops per liter"
+  :hygaccess.product/target-countries ["IN" "BD" "PK" "ID" "PH"]
+  :hygaccess.product/target-countries-approved ["IN" "BD" "ID" "PH"]
+  :hygaccess.product/target-countries-pending ["PK"]
+  :hygaccess.product/claim "reduces waterborne bacterial and viral pathogens when used per labeled dosing (WHO Safe Water System-style point-of-use treatment)"
+  :hygaccess.product/channels [:ngo-who-program :government-procurement]}
+
+ {:product/id "int.hygaccess.surface-disinfectant"
+  :product/title "Hygiene Access 次亜塩素酸ナトリウム環境表面消毒剤 0.1% (すぐ使えるready-to-use)"
+  :product/price-minor 700000
+  :product/currency "USDC"
+  :hygaccess.product/product-type :surface-disinfectant
+  :hygaccess.product/active :sodium-hypochlorite
+  :hygaccess.product/concentration-pct 0.1
+  :hygaccess.product/packaging-format :small-bottle-100ml
+  :hygaccess.product/packaging-note "100ml ready-to-use spray/wipe-down bottle, no dilution required by the end user"
+  :hygaccess.product/target-countries ["IN" "SA" "AE" "EG"]
+  :hygaccess.product/target-countries-approved ["IN" "SA" "AE"]
+  :hygaccess.product/target-countries-pending ["EG"]
+  :hygaccess.product/claim "disinfects hard non-porous surfaces"
+  :hygaccess.product/channels [:licensed-informal-retail-aggregator :institutional-bulk]}
+
+ {:product/id "int.hygaccess.antibacterial-soap-bar"
+  :product/title "Hygiene Access IPMP 抗菌石鹸バー 0.15% (個包装サシェ形式)"
+  :product/price-minor 150000
+  :product/currency "USDC"
+  :hygaccess.product/product-type :antibacterial-soap
+  :hygaccess.product/active :isopropylmethylphenol
+  :hygaccess.product/concentration-pct 0.15
+  :hygaccess.product/packaging-format :sachet
+  :hygaccess.product/packaging-note "individually-wrapped bar-equivalent unit -- ':sachet' is the closest closed-set distribution-packaging format for a wrapped bar (the closed format set governs distribution packaging, not the physical soap-bar shape itself)"
+  :hygaccess.product/target-countries ["IN" "BD" "PK" "ID" "PH" "EG"]
+  :hygaccess.product/target-countries-approved ["IN" "BD" "ID" "PH"]
+  :hygaccess.product/target-countries-pending ["PK" "EG"]
+  :hygaccess.product/claim "reduces transient bacteria on hands with proper handwashing technique"
+  :hygaccess.product/channels [:microfinance-social-enterprise :licensed-informal-retail-aggregator]}
+
+ {:product/id "int.hygaccess.antibacterial-liquid-soap"
+  :product/title "Hygiene Access IPMP 抗菌液体石鹸 0.2% (小容量ボトル)"
+  :product/price-minor 250000
+  :product/currency "USDC"
+  :hygaccess.product/product-type :antibacterial-soap
+  :hygaccess.product/active :isopropylmethylphenol
+  :hygaccess.product/concentration-pct 0.2
+  :hygaccess.product/packaging-format :small-bottle-50ml
+  :hygaccess.product/packaging-note "50ml pump/flip-top bottle -- kept small to stay comfortably under this product type's own affordability ceiling"
+  :hygaccess.product/target-countries ["IN" "BD" "PK" "ID" "PH"]
+  :hygaccess.product/target-countries-approved ["IN" "BD" "ID" "PH"]
+  :hygaccess.product/target-countries-pending ["PK"]
+  :hygaccess.product/claim "supports hand-hygiene behavior alongside adequate water access"
+  :hygaccess.product/channels [:microfinance-social-enterprise :licensed-informal-retail-aggregator]}]
