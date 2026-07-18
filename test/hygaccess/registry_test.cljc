@@ -122,3 +122,77 @@
 (deftest register-marketing-claim-produces-zero-padded-number
   (let [{:strs [claim_number]} (registry/register-marketing-claim "clm-1" 0)]
     (is (= "CLM-000000" claim_number))))
+
+;; ----------------------------- GMP raw-material-lot checks -----------------------------
+
+(deftest raw-material-assay-plausibility-window-known-actives
+  (is (= [10.0 15.0] (registry/raw-material-assay-plausibility-window-for :sodium-hypochlorite)))
+  (is (= [98.0 100.5] (registry/raw-material-assay-plausibility-window-for :isopropylmethylphenol)))
+  (is (nil? (registry/raw-material-assay-plausibility-window-for :unobtainium))))
+
+(deftest raw-material-assay-plausible-boundaries-inclusive
+  (testing "boundary values are within the plausibility window (inclusive)"
+    (is (true? (registry/raw-material-assay-plausible? :sodium-hypochlorite 10.0)))
+    (is (true? (registry/raw-material-assay-plausible? :sodium-hypochlorite 15.0)))
+    (is (true? (registry/raw-material-assay-plausible? :sodium-hypochlorite 12.5)))
+    (is (true? (registry/raw-material-assay-plausible? :isopropylmethylphenol 98.0)))
+    (is (true? (registry/raw-material-assay-plausible? :isopropylmethylphenol 100.5))))
+  (testing "far outside the window is implausible/fabricated data"
+    (is (false? (registry/raw-material-assay-plausible? :sodium-hypochlorite 9.9)))
+    (is (false? (registry/raw-material-assay-plausible? :sodium-hypochlorite 40.0)))
+    (is (false? (registry/raw-material-assay-plausible? :isopropylmethylphenol 50.0)))
+    (is (false? (registry/raw-material-assay-plausible? :sodium-hypochlorite nil)))
+    (is (false? (registry/raw-material-assay-plausible? :unobtainium 12.0)))))
+
+(deftest raw-material-lot-ready-requires-verified-and-registered
+  (is (true? (registry/raw-material-lot-ready? {:verified? true :registered? true})))
+  (is (false? (registry/raw-material-lot-ready? {:verified? true :registered? false})))
+  (is (false? (registry/raw-material-lot-ready? {:verified? false :registered? true})))
+  (is (false? (registry/raw-material-lot-ready? nil))))
+
+(deftest raw-material-lot-coa-received-is-ground-truth-flag
+  (is (true? (registry/raw-material-lot-coa-received? {:coa-received? true})))
+  (is (false? (registry/raw-material-lot-coa-received? {:coa-received? false})))
+  (is (false? (registry/raw-material-lot-coa-received? nil))))
+
+(deftest raw-material-lot-release-eligible-requires-all-four-conditions
+  (let [clean {:active :sodium-hypochlorite :verified? true :registered? true
+               :coa-received? true :coa-assay-pct 12.5}]
+    (is (true? (registry/raw-material-lot-release-eligible? clean)))
+    (is (false? (registry/raw-material-lot-release-eligible? (assoc clean :verified? false)))
+        "not verified")
+    (is (false? (registry/raw-material-lot-release-eligible? (assoc clean :coa-received? false)))
+        "CoA not received")
+    (is (false? (registry/raw-material-lot-release-eligible? (assoc clean :coa-assay-pct 40.0)))
+        "implausible assay")
+    (is (false? (registry/raw-material-lot-release-eligible? nil)))))
+
+;; ----------------------------- in-process QC (IPQC) mixing-homogeneity checks -----------------------------
+
+(deftest homogeneity-within-threshold-5-percent-boundary-inclusive
+  (is (true? (registry/homogeneity-within-threshold? 0.0)))
+  (is (true? (registry/homogeneity-within-threshold? 2.1)))
+  (is (true? (registry/homogeneity-within-threshold? 5.0))
+      "exactly at the threshold is within it")
+  (is (false? (registry/homogeneity-within-threshold? 5.01)))
+  (is (false? (registry/homogeneity-within-threshold? 9.0)))
+  (is (false? (registry/homogeneity-within-threshold? -1.0)))
+  (is (false? (registry/homogeneity-within-threshold? nil))))
+
+;; ----------------------------- Certificate of Analysis (CoA) / batch-release checks -----------------------------
+
+(deftest coa-pass-is-ground-truth-flag
+  (is (true? (registry/coa-pass? {:coa {:coa-pass? true}})))
+  (is (false? (registry/coa-pass? {:coa {:coa-pass? false}})))
+  (is (false? (registry/coa-pass? {:coa nil})))
+  (is (false? (registry/coa-pass? nil))))
+
+(deftest batch-release-qc-complete-requires-both-coa-pass-and-homogeneity
+  (let [clean {:coa {:coa-pass? true} :ipqc {:mixing-homogeneity-cov-pct 2.1}}]
+    (is (true? (registry/batch-release-qc-complete? clean)))
+    (is (false? (registry/batch-release-qc-complete? (assoc clean :coa {:coa-pass? false})))
+        "CoA not passing")
+    (is (false? (registry/batch-release-qc-complete?
+                 (assoc clean :ipqc {:mixing-homogeneity-cov-pct 9.0})))
+        "homogeneity CoV above threshold")
+    (is (false? (registry/batch-release-qc-complete? {})))))

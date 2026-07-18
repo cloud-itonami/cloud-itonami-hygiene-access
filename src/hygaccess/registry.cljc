@@ -6,9 +6,11 @@
   validation, packaging-format validation, market-entry-approval
   validation, affordability-price-ceiling validation,
   marketing-claim-substantiation validation, distribution-channel-
-  partner-licensing validation, and draft
-  maintenance-schedule/shipment-coordination/packaging-design/
-  market-entry/marketing-claim record construction.
+  partner-licensing validation, GMP-style raw-material-lot release
+  validation, in-process-QC (IPQC) mixing-homogeneity validation,
+  Certificate-of-Analysis (CoA) / batch-release sign-off validation,
+  and draft maintenance-schedule/shipment-coordination/packaging-
+  design/market-entry/marketing-claim record construction.
 
   Two active ingredients, sodium hypochlorite (NaOCl, 次亜塩素酸ナトリウム)
   and isopropylmethylphenol (IPMP / o-cymen-5-ol), formulated into three
@@ -461,6 +463,170 @@
   (and (some? partner)
        (channel-partner-licensed? partner)
        (channel-partner-serves-channel? partner channel)))
+
+;; ----------------------------- GMP raw-material-lot release checks -----------------------------
+;;
+;; A production batch is only as trustworthy as the incoming
+;; raw-material SUPPLY LOT it was formulated from. This is a genuinely
+;; new GMP (Good Manufacturing Practice) -style gate this build adds on
+;; top of the existing equipment/batch verified-gate pattern: a
+;; `:log-production-batch` proposal that cites a `:raw-material-lot-
+;; number` must have that lot independently resolve to a real,
+;; verified/registered lot that has actually RECEIVED its own
+;; Certificate of Analysis (CoA) and whose CoA assay result is itself a
+;; PLAUSIBLE purity reading for that active -- never taken on the
+;; batch's/advisor's own self-report. See `hygaccess.governor`'s
+;; `raw-material-lot-not-verified-violations` /
+;; `raw-material-lot-coa-not-received-violations` /
+;; `raw-material-lot-assay-implausible-violations`.
+
+(def raw-material-assay-plausibility-pct
+  "Closed per-ACTIVE (not `[active product-type]` -- a raw-material lot
+  is an incoming SUPPLY lot of the active itself, shared across
+  whichever finished product types that active later feeds, not tied to
+  one finished-product's own concentration window) plausibility window
+  for a raw-material lot's own Certificate-of-Analysis (CoA) assay
+  result. This is DELIBERATELY DIFFERENT from `efficacy-window-pct`
+  (the FINISHED, formulated product's own concentration window) -- a
+  raw-material lot is typically supplied as a concentrated stock the
+  plant later dilutes down into the finished product's own efficacy
+  window:
+  - `:sodium-hypochlorite` 10.0-15.0% -- representative of commercial
+    bulk/industrial-grade liquid sodium hypochlorite ('liquid chlorine')
+    as commonly supplied for on-site dilution (a widely-cited real-world
+    commercial-strength band; actual supplier-to-supplier variance
+    exists -- this is a representative plausibility band for catching
+    fabricated/nonsensical data, not a precise specification floor or
+    ceiling).
+  - `:isopropylmethylphenol` 98.0-100.5% -- IPMP is supplied as a
+    technical-grade solid active (not a dilute solution), so its own
+    CoA assay is expected close to 100% purity; the 100.5% upper bound
+    allows for ordinary assay-methodology rounding/measurement
+    tolerance, not a claim that >100% purity is itself physically
+    meaningful.
+  A raw-material lot's own `:coa-assay-pct` far outside this window
+  (e.g. a sodium-hypochlorite lot 'assayed' at 40%) is implausible
+  supplier/fabricated data, not a real CoA result -- see
+  `raw-material-assay-plausible?` below."
+  {:sodium-hypochlorite   [10.0 15.0]
+   :isopropylmethylphenol [98.0 100.5]})
+
+(defn raw-material-assay-plausibility-window-for [active]
+  (get raw-material-assay-plausibility-pct active))
+
+(defn raw-material-assay-plausible?
+  "Ground-truth check: is `assay-pct` a number falling within `active`'s
+  own closed CoA-assay plausibility window (inclusive)? nil/non-number,
+  an unrecognized active, or a value outside the window is implausible
+  -- rejected exactly like an out-of-window finished-product
+  concentration (`concentration-within-efficacy-window?`)."
+  [active assay-pct]
+  (boolean
+   (and (number? assay-pct)
+        (let [[lo hi] (raw-material-assay-plausibility-window-for active)]
+          (and (some? lo)
+               (>= (double assay-pct) (double lo))
+               (<= (double assay-pct) (double hi)))))))
+
+(defn raw-material-lot-verified?
+  "Ground-truth check: has `lot`'s own record been marked verified?"
+  [lot]
+  (true? (:verified? lot)))
+
+(defn raw-material-lot-registered?
+  "Ground-truth check: is `lot`'s own record on file in the plant's
+  raw-material-lot registry?"
+  [lot]
+  (true? (:registered? lot)))
+
+(defn raw-material-lot-ready?
+  "Combined ground-truth gate: `lot` must be both `:verified?` AND
+  `:registered?` before ANY production batch may cite it -- mirrors the
+  equipment/batch verified-gate pattern exactly, applied to a
+  raw-material supply lot."
+  [lot]
+  (and (raw-material-lot-verified? lot) (raw-material-lot-registered? lot)))
+
+(defn raw-material-lot-coa-received?
+  "Ground-truth check: has `lot`'s own record actually RECEIVED its own
+  Certificate of Analysis (`:coa-received?` true)? A lot without a CoA
+  on file may not back a production batch, regardless of how plausible
+  any claimed assay number looks."
+  [lot]
+  (true? (:coa-received? lot)))
+
+(defn raw-material-lot-release-eligible?
+  "Combined ground-truth gate for GMP raw-material release: `lot` must
+  exist, be `:verified?` AND `:registered?`, have actually RECEIVED its
+  own CoA, AND that CoA's own `:coa-assay-pct` must fall within its own
+  active's closed plausibility window -- never taken on the batch's/
+  advisor's own self-report."
+  [lot]
+  (and (some? lot)
+       (raw-material-lot-ready? lot)
+       (raw-material-lot-coa-received? lot)
+       (raw-material-assay-plausible? (:active lot) (:coa-assay-pct lot))))
+
+;; ----------------------------- in-process QC (IPQC) mixing-homogeneity checks -----------------------------
+;;
+;; `:mixing-homogeneity-cov-pct` is the coefficient-of-variation (%) of
+;; active-ingredient concentration across a batch at end-of-mixing. In
+;; a real deployment this number would come from EITHER a physical
+;; in-process QC (IPQC) sample drawn from several points in the mixing
+;; tank, OR a CFD (computational fluid dynamics) mixing-tank simulation
+;; -- see the sibling repo `kotoba-lang/kami-app-hygaccess-plant`
+;; (referenced here by NAME ONLY, a loose EDN-field-level convention
+;; this fleet uses between independently-governed actors/repos; this
+;; repo does NOT fetch, read, or depend on that repo's code).
+
+(def homogeneity-cov-threshold-pct
+  "The maximum acceptable coefficient-of-variation (CoV, %) of
+  active-ingredient concentration across a batch at end-of-mixing
+  ('mixing homogeneity') this actor will accept before a batch's own
+  in-process-QC (IPQC) record is treated as non-conforming. 5.0% is
+  this actor's own REPRESENTATIVE acceptance threshold for a simple
+  liquid-liquid dilution mixing process -- general pharmaceutical/
+  chemical blend-uniformity practice treats single-digit-percent CoV as
+  a reasonable 'well-mixed' bar for this class of process. This is NOT
+  a claim that 5.0% is itself drawn from a specific regulatory citation
+  for these exact products; it is this actor's own documented,
+  representative choice, open to revision if a real deployment's
+  applicable GMP guidance sets a different number."
+  5.0)
+
+(defn homogeneity-within-threshold?
+  "Ground-truth check: is `cov-pct` a non-negative number at or below
+  `homogeneity-cov-threshold-pct`? nil/non-number/negative is treated
+  as not-within-threshold (a fabricated or missing IPQC reading is
+  never treated as passing)."
+  [cov-pct]
+  (boolean
+   (and (number? cov-pct)
+        (>= (double cov-pct) 0.0)
+        (<= (double cov-pct) (double homogeneity-cov-threshold-pct)))))
+
+;; ----------------------------- Certificate of Analysis (CoA) / batch-release sign-off checks -----------------------------
+
+(defn coa-pass?
+  "Ground-truth check: does `batch`'s own recorded `:coa` map declare
+  `:coa-pass? true`? Never taken on a shipment proposal's own
+  self-report -- the shipment proposal does not even carry this field;
+  it is read from the batch's OWN already-committed record."
+  [batch]
+  (true? (:coa-pass? (:coa batch))))
+
+(defn batch-release-qc-complete?
+  "Combined ground-truth gate (GMP 'batch release' sign-off): `batch`
+  must independently carry BOTH a passing Certificate of Analysis
+  (`:coa {:coa-pass? true ...}`) AND an in-process mixing-homogeneity
+  reading within `homogeneity-cov-threshold-pct` -- both re-derived
+  from the batch's OWN recorded fields, never from a shipment
+  proposal's own self-report. This is the 'batch release' sign-off a
+  real GMP QA function performs before ANY batch may ship -- see
+  `hygaccess.governor/batch-release-qc-incomplete-violations`."
+  [batch]
+  (and (coa-pass? batch)
+       (homogeneity-within-threshold? (:mixing-homogeneity-cov-pct (:ipqc batch)))))
 
 ;; ----------------------------- draft record construction -----------------------------
 

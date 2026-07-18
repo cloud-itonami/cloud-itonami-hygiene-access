@@ -365,6 +365,143 @@
         (is (= :commit (get-in r2 [:state :disposition])))
         (is (= 1 (count (store/shipment-history db))))))))
 
+;; ----------------------------- GMP raw-material-lot release (log-production-batch) -----------------------------
+
+(deftest raw-material-lot-not-verified-is-held
+  (testing "a production-batch patch citing a NOT verified/registered raw-material lot -> HOLD"
+    (let [[db actor] (fresh)
+          res (exec-op actor "t26" {:op :log-production-batch :effect :propose :subject "batch-005"
+                                    :patch {:product-type :water-purification-drops
+                                            :active :sodium-hypochlorite
+                                            :concentration-pct 1.0
+                                            :raw-material-lot-number "RM-LOT-NAOCL-003"}}
+                       coordinator)]
+      (is (= :hold (get-in res [:state :disposition])))
+      (is (some #{:raw-material-lot-not-verified} (-> (store/ledger db) last :basis)))
+      (is (nil? (store/batch db "batch-005")) "never lands a new batch in the SSoT"))))
+
+(deftest raw-material-lot-coa-not-received-is-held
+  (testing "a production-batch patch citing a verified/registered lot whose own CoA has NOT been received -> HOLD"
+    (let [[db actor] (fresh)
+          res (exec-op actor "t27" {:op :log-production-batch :effect :propose :subject "batch-006"
+                                    :patch {:product-type :water-purification-drops
+                                            :active :sodium-hypochlorite
+                                            :concentration-pct 1.0
+                                            :raw-material-lot-number "RM-LOT-NAOCL-004"}}
+                       coordinator)]
+      (is (= :hold (get-in res [:state :disposition])))
+      (is (some #{:raw-material-lot-coa-not-received} (-> (store/ledger db) last :basis)))
+      (is (nil? (store/batch db "batch-006"))))))
+
+(deftest raw-material-lot-assay-implausible-is-held
+  (testing "a production-batch patch citing a lot whose own CoA assay is implausible for its active -> HOLD"
+    (let [[db actor] (fresh)
+          res (exec-op actor "t28" {:op :log-production-batch :effect :propose :subject "batch-007"
+                                    :patch {:product-type :water-purification-drops
+                                            :active :sodium-hypochlorite
+                                            :concentration-pct 1.0
+                                            :raw-material-lot-number "RM-LOT-NAOCL-005"}}
+                       coordinator)]
+      (is (= :hold (get-in res [:state :disposition])))
+      (is (some #{:raw-material-lot-assay-implausible} (-> (store/ledger db) last :basis)))
+      (is (nil? (store/batch db "batch-007"))))))
+
+(deftest raw-material-lot-clean-auto-commits
+  (testing "a production-batch patch citing a verified/registered/CoA-received/plausible-assay lot -> auto-commits cleanly"
+    (let [[db actor] (fresh)
+          res (exec-op actor "t29" {:op :log-production-batch :effect :propose :subject "batch-008"
+                                    :patch {:product-type :water-purification-drops
+                                            :active :sodium-hypochlorite
+                                            :concentration-pct 1.0
+                                            :raw-material-lot-number "RM-LOT-NAOCL-001"}}
+                       coordinator)]
+      (is (= :commit (get-in res [:state :disposition])))
+      (is (= "RM-LOT-NAOCL-001" (:raw-material-lot-number (store/batch db "batch-008")))))))
+
+;; ----------------------------- in-process QC (IPQC) mixing-homogeneity (log-production-batch) -----------------------------
+
+(deftest mixing-homogeneity-cov-exceeds-threshold-is-held
+  (testing "an IPQC mixing-homogeneity CoV above the 5.0% threshold -> HOLD"
+    (let [[db actor] (fresh)
+          res (exec-op actor "t30" {:op :log-production-batch :effect :propose :subject "batch-001"
+                                    :patch {:ipqc {:ph-check-pass? true :assay-mid-batch-pct 1.0
+                                                    :mixing-homogeneity-cov-pct 7.5}}}
+                       coordinator)]
+      (is (= :hold (get-in res [:state :disposition])))
+      (is (some #{:mixing-homogeneity-cov-exceeds-threshold} (-> (store/ledger db) last :basis)))
+      (is (not= 7.5 (get-in (store/batch db "batch-001") [:ipqc :mixing-homogeneity-cov-pct]))
+          "the out-of-threshold IPQC patch never lands in the SSoT -- batch-001 keeps its seeded 2.1% reading"))))
+
+(deftest mixing-homogeneity-cov-within-threshold-auto-commits
+  (testing "an IPQC mixing-homogeneity CoV within the 5.0% threshold -> auto-commits cleanly"
+    (let [[db actor] (fresh)
+          res (exec-op actor "t31" {:op :log-production-batch :effect :propose :subject "batch-001"
+                                    :patch {:ipqc {:ph-check-pass? true :assay-mid-batch-pct 1.0
+                                                    :mixing-homogeneity-cov-pct 3.0}}}
+                       coordinator)]
+      (is (= :commit (get-in res [:state :disposition])))
+      (is (= 3.0 (get-in (store/batch db "batch-001") [:ipqc :mixing-homogeneity-cov-pct]))))))
+
+;; ----------------------------- Certificate of Analysis (CoA) / batch-release sign-off (coordinate-shipment) -----------------------------
+
+(deftest coa-not-pass-blocks-shipment-is-held
+  (testing "a verified/registered/within-weight batch whose own CoA has NOT passed -> HOLD (batch-release sign-off incomplete)"
+    (let [[db actor] (fresh)
+          _ (store/commit-record! db {:effect :batch/upsert :path ["batch-100"]
+                                      :value {:product-type :water-purification-drops
+                                              :active :sodium-hypochlorite :concentration-pct 1.0
+                                              :weight-kg 200.0 :shipped-weight-kg 0.0
+                                              :verified? true :registered? true
+                                              :coa {:coa-pass? false}
+                                              :ipqc {:mixing-homogeneity-cov-pct 2.0}}})
+          res (exec-op actor "t32" {:op :coordinate-shipment :effect :propose :subject "ship-100"
+                                    :value {:batch-id "batch-100" :weight-kg 10.0
+                                            :destination "informal-retail-north"}}
+                       coordinator)]
+      (is (= :hold (get-in res [:state :disposition])))
+      (is (some #{:batch-release-qc-incomplete} (-> (store/ledger db) last :basis)))
+      (is (not (some #{:batch-not-verified :shipment-weight-exceeded}
+                      (-> (store/ledger db) last :basis)))
+          "isolated to the CoA/IPQC batch-release gate -- the batch IS otherwise verified/registered/within-weight")
+      (is (empty? (store/shipment-history db))))))
+
+(deftest batch-release-qc-incomplete-homogeneity-exceeded-blocks-shipment-is-held
+  (testing "a verified/registered/CoA-passing batch whose own stored IPQC homogeneity CoV exceeds threshold -> HOLD -- a second, independent re-derivation from the store even though `:log-production-batch` already gates this at intake"
+    (let [[db actor] (fresh)
+          _ (store/commit-record! db {:effect :batch/upsert :path ["batch-101"]
+                                      :value {:product-type :water-purification-drops
+                                              :active :sodium-hypochlorite :concentration-pct 1.0
+                                              :weight-kg 200.0 :shipped-weight-kg 0.0
+                                              :verified? true :registered? true
+                                              :coa {:coa-pass? true}
+                                              :ipqc {:mixing-homogeneity-cov-pct 9.0}}})
+          res (exec-op actor "t33" {:op :coordinate-shipment :effect :propose :subject "ship-101"
+                                    :value {:batch-id "batch-101" :weight-kg 10.0
+                                            :destination "informal-retail-north"}}
+                       coordinator)]
+      (is (= :hold (get-in res [:state :disposition])))
+      (is (some #{:batch-release-qc-incomplete} (-> (store/ledger db) last :basis)))
+      (is (empty? (store/shipment-history db))))))
+
+(deftest batch-release-qc-complete-permits-shipment-escalation
+  (testing "a verified/registered/within-weight batch with a passing CoA AND in-threshold homogeneity -> clears the batch-release gate, still escalates for human approval (never auto-committed, same as every other shipment)"
+    (let [[db actor] (fresh)
+          _ (store/commit-record! db {:effect :batch/upsert :path ["batch-102"]
+                                      :value {:product-type :water-purification-drops
+                                              :active :sodium-hypochlorite :concentration-pct 1.0
+                                              :weight-kg 200.0 :shipped-weight-kg 0.0
+                                              :verified? true :registered? true
+                                              :coa {:coa-pass? true}
+                                              :ipqc {:mixing-homogeneity-cov-pct 2.0}}})
+          res (exec-op actor "t34" {:op :coordinate-shipment :effect :propose :subject "ship-102"
+                                    :value {:batch-id "batch-102" :weight-kg 10.0
+                                            :destination "informal-retail-north"}}
+                       coordinator)]
+      (is (= :interrupted (:status res)))
+      (let [r2 (approve! actor "t34")]
+        (is (= :commit (get-in r2 [:state :disposition])))
+        (is (= 1 (count (store/shipment-history db))))))))
+
 ;; ----------------------------- ledger discipline -----------------------------
 
 (deftest every-decision-leaves-one-ledger-fact

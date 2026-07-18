@@ -62,6 +62,24 @@
                                 entry per distribution-channel partner,
                                 `{:id .. :licensed? bool :channels
                                 #{..}}`.
+    - `raw-material-lots`    -- GROUND TRUTH, not self-report: one
+                                entry per incoming raw-material SUPPLY
+                                lot of an active ingredient,
+                                `{:lot-number .. :active .. :supplier ..
+                                :coa-received? bool :coa-assay-pct
+                                <number> :verified? bool :registered?
+                                bool}`. A `batches` record may cite one
+                                by `:raw-material-lot-number`; a batch's
+                                own `:ipqc` map (`:ph-check-pass?
+                                :assay-mid-batch-pct :mixing-
+                                homogeneity-cov-pct`) and `:coa` map
+                                (`:coa-assay-result-pct :coa-tested-by
+                                :coa-date :coa-pass?`) are the FINISHED
+                                batch's own in-process-QC and
+                                Certificate-of-Analysis / batch-release
+                                sign-off records -- see
+                                `hygaccess.registry`'s GMP raw-material-
+                                lot-release / IPQC / CoA sections.
 
   Plus a generic `records` map (id -> raw record) used only for
   direct, domain-agnostic `commit-record!` calls (a record with no
@@ -92,6 +110,8 @@
   (marketing-claim [s id])
   (market-approval [s country] "ground-truth market-entry-approval record for a country")
   (channel-partner [s id] "ground-truth channel-partner record")
+  (raw-material-lot [s lot-number] "ground-truth raw-material supply-lot record")
+  (all-raw-material-lots [s])
   (safety-concerns [s] "the append-only safety-concern log")
   (ledger [s])
   (maintenance-history [s] "the append-only maintenance-schedule history (hygaccess.registry drafts)")
@@ -111,25 +131,46 @@
   (with-batches [s batches] "replace/seed the batch directory (map id->batch)")
   (with-equipment [s equipment] "replace/seed the equipment directory (map id->equipment)")
   (with-market-approvals [s approvals] "replace/seed the market-entry-approvals directory (map country->approval)")
-  (with-channel-partners [s partners] "replace/seed the channel-partners directory (map id->partner)"))
+  (with-channel-partners [s partners] "replace/seed the channel-partners directory (map id->partner)")
+  (with-raw-material-lots [s lots] "replace/seed the raw-material-lots directory (map lot-number->lot)"))
 
 ;; ----------------------------- demo/sample data -----------------------------
 
 (defn- sample-batches []
+  ;; batch-001/batch-002 additionally carry a full clean GMP trail
+  ;; (raw-material-lot-number -> a verified/registered/CoA-received/
+  ;; plausible-assay lot; :ipqc with a within-threshold mixing-
+  ;; homogeneity CoV; :coa with a passing Certificate of Analysis) so
+  ;; both may auto-commit :log-production-batch patches AND clear the
+  ;; new `batch-release-qc-incomplete-violations` shipment gate by
+  ;; default. batch-003 is deliberately left WITHOUT any of these three
+  ;; new fields (nil) -- it is UNVERIFIED/unregistered and has not yet
+  ;; been through raw-material/IPQC/CoA release at all, matching its
+  ;; existing pre-QC status.
   {"batch-001" {:id "batch-001" :product-type :water-purification-drops
                 :active :sodium-hypochlorite :concentration-pct 1.0
                 :weight-kg 500.0 :off-spec-rate-pct 0.5
                 :co-ingredients #{}
                 :verified? true :registered? true
                 :shipped-weight-kg 100.0
-                :last-assessed "2026-07-01"}
+                :last-assessed "2026-07-01"
+                :raw-material-lot-number "RM-LOT-NAOCL-001"
+                :ipqc {:ph-check-pass? true :assay-mid-batch-pct 1.0
+                       :mixing-homogeneity-cov-pct 2.1}
+                :coa {:coa-assay-result-pct 1.0 :coa-tested-by "QA-lab-1"
+                      :coa-date "2026-07-01" :coa-pass? true}}
    "batch-002" {:id "batch-002" :product-type :surface-disinfectant
                 :active :sodium-hypochlorite :concentration-pct 0.1
                 :weight-kg 800.0 :off-spec-rate-pct 1.0
                 :co-ingredients #{}
                 :verified? true :registered? true
                 :shipped-weight-kg 750.0
-                :last-assessed "2026-07-01"}
+                :last-assessed "2026-07-01"
+                :raw-material-lot-number "RM-LOT-NAOCL-002"
+                :ipqc {:ph-check-pass? true :assay-mid-batch-pct 0.1
+                       :mixing-homogeneity-cov-pct 3.4}
+                :coa {:coa-assay-result-pct 0.1 :coa-tested-by "QA-lab-1"
+                      :coa-date "2026-07-01" :coa-pass? true}}
    "batch-003" {:id "batch-003" :product-type :antibacterial-soap
                 :active :isopropylmethylphenol :concentration-pct 0.15
                 :weight-kg 300.0 :off-spec-rate-pct 0.8
@@ -174,6 +215,31 @@
                         :licensed? true :channels #{:institutional-bulk}}
    "partner-retail-2" {:id "partner-retail-2" :name "unlicensed informal-retail aggregator (pending review)"
                         :licensed? false :channels #{:licensed-informal-retail-aggregator}}})
+
+(defn- sample-raw-material-lots []
+  ;; GROUND TRUTH, not self-report. Mirrors the equipment/market-
+  ;; approval/channel-partner seed pattern: a mix of clean lots (feed
+  ;; batch-001/batch-002 above) plus dedicated NOT-verified /
+  ;; coa-not-received / assay-implausible lots for HARD-hold test
+  ;; coverage of `hygaccess.governor`'s new raw-material-lot checks.
+  {"RM-LOT-NAOCL-001" {:lot-number "RM-LOT-NAOCL-001" :active :sodium-hypochlorite
+                        :supplier "Gulf Chlor-Alkali Co." :coa-received? true
+                        :coa-assay-pct 12.5 :verified? true :registered? true}
+   "RM-LOT-NAOCL-002" {:lot-number "RM-LOT-NAOCL-002" :active :sodium-hypochlorite
+                        :supplier "Gulf Chlor-Alkali Co." :coa-received? true
+                        :coa-assay-pct 11.8 :verified? true :registered? true}
+   "RM-LOT-IPMP-001"   {:lot-number "RM-LOT-IPMP-001" :active :isopropylmethylphenol
+                         :supplier "OTC Actives Trading Ltd." :coa-received? true
+                         :coa-assay-pct 99.2 :verified? true :registered? true}
+   "RM-LOT-NAOCL-003" {:lot-number "RM-LOT-NAOCL-003" :active :sodium-hypochlorite
+                        :supplier "unverified spot-market supplier" :coa-received? true
+                        :coa-assay-pct 12.0 :verified? false :registered? false}
+   "RM-LOT-NAOCL-004" {:lot-number "RM-LOT-NAOCL-004" :active :sodium-hypochlorite
+                        :supplier "Gulf Chlor-Alkali Co." :coa-received? false
+                        :coa-assay-pct nil :verified? true :registered? true}
+   "RM-LOT-NAOCL-005" {:lot-number "RM-LOT-NAOCL-005" :active :sodium-hypochlorite
+                        :supplier "unverified spot-market supplier" :coa-received? true
+                        :coa-assay-pct 40.0 :verified? true :registered? true}})
 
 ;; ----------------------------- shared commit logic -----------------------------
 
@@ -229,6 +295,8 @@
   (marketing-claim [_ id] (get-in @a [:marketing-claims id]))
   (market-approval [_ country] (get-in @a [:market-entry-approvals country]))
   (channel-partner [_ id] (get-in @a [:channel-partners id]))
+  (raw-material-lot [_ lot-number] (get-in @a [:raw-material-lots lot-number]))
+  (all-raw-material-lots [_] (sort-by :lot-number (vals (:raw-material-lots @a))))
   (safety-concerns [_] (:safety-concerns @a))
   (ledger [_] (:ledger @a))
   (maintenance-history [_] (:maintenance-history @a))
@@ -324,14 +392,15 @@
   (with-batches [s batches] (when (seq batches) (swap! a assoc :batches batches)) s)
   (with-equipment [s equipment] (when (seq equipment) (swap! a assoc :equipment equipment)) s)
   (with-market-approvals [s approvals] (when (seq approvals) (swap! a assoc :market-entry-approvals approvals)) s)
-  (with-channel-partners [s partners] (when (seq partners) (swap! a assoc :channel-partners partners)) s))
+  (with-channel-partners [s partners] (when (seq partners) (swap! a assoc :channel-partners partners)) s)
+  (with-raw-material-lots [s lots] (when (seq lots) (swap! a assoc :raw-material-lots lots)) s))
 
 (defn mem-store
   "A fresh, empty MemStore."
   []
   (->MemStore (atom {:batches {} :equipment {} :maintenance {} :shipments {}
                       :packaging-designs {} :market-entries {} :marketing-claims {}
-                      :market-entry-approvals {} :channel-partners {}
+                      :market-entry-approvals {} :channel-partners {} :raw-material-lots {}
                       :records {} :safety-concerns []
                       :ledger [] :maintenance-sequence 0 :maintenance-history []
                       :shipment-sequence 0 :shipment-history []
@@ -358,12 +427,20 @@
   - Five `:licensed? true` channel partners (one per distribution
     channel) and one `:licensed? false` partner (pending review) for
     HARD-hold test coverage.
+  - Six `raw-material-lots`: three clean verified/registered/CoA-
+    received/plausible-assay lots (`RM-LOT-NAOCL-001`/`-002` feed
+    `batch-001`/`batch-002` above, `RM-LOT-IPMP-001` available for
+    IPMP-active batches) plus three dedicated bad lots for HARD-hold
+    test coverage (`RM-LOT-NAOCL-003` NOT verified/registered,
+    `RM-LOT-NAOCL-004` CoA NOT received, `RM-LOT-NAOCL-005` an
+    implausible CoA assay result).
   Returns `s` (thread-friendly with `->`)."
   [s]
   (with-batches s (sample-batches))
   (with-equipment s (sample-equipment))
   (with-market-approvals s (sample-market-approvals))
   (with-channel-partners s (sample-channel-partners))
+  (with-raw-material-lots s (sample-raw-material-lots))
   s)
 
 ;; ----------------------------- back-compat aliases -----------------------------

@@ -1,0 +1,140 @@
+# Gulf/GCC (GSO conformity) regulatory dossier outline — DRAFT / TEMPLATE
+
+> **DRAFT / TEMPLATE — prepared by an AI coding agent as a starting point for
+> local regulatory counsel. This is NOT a filed submission, NOT legal advice,
+> and NOT a claim that any `cloud-itonami-hygiene-access` product has
+> actually been approved, registered, or Gulf-Conformity-marked by GSO or
+> any Gulf national body.** See `docs/regulatory/README.md` for the
+> disclaimer that applies to all three dossiers in this directory. This
+> actor's own `market-not-approved-violations`/`certification-decision-
+> blocked-violations` governor checks structurally refuse to let this actor
+> claim, decide, or grant a real regulatory approval — this document is a
+> coordination aid for the human who will actually file.
+
+## 1. Regulatory landscape
+
+The **GCC Standardization Organization (GSO)** is the Gulf states'
+regional standards/conformity-assessment body. Both disinfectant/biocide
+products and cosmetics fall under its scope, and real Gulf market access
+for a regulated chemical/consumer product typically requires the
+**Gulf Conformity Mark**.
+
+A GHS-aligned draft chemical-classification/labeling regulation is
+in progress as of this repo's build date (2026):
+
+- **Draft GSO 2654:2025** — proposes implementation of the Globally
+  Harmonized System of Classification and Labelling of Chemicals (GHS,
+  Rev. 10) across GSO member states, referencing the EU CLP Regulation,
+  covering hazard classification plus Safety Data Sheet (SDS) and label
+  requirements for substances and mixtures. **THIS IS A DRAFT
+  REGULATION, not necessarily final** — a real filer must check GSO's
+  current published status (approval date, effective date, which member
+  states have transposed it into national law) directly with GSO before
+  relying on it in a live filing. TODO (real applicant): confirm current
+  status directly at gso.org.sa (or successor) — draft regulations move
+  through comment periods and can change scope/timeline before adoption.
+- Draft GSO 2654:2025's stated scope (per public notification material at
+  research time) applies broadly to industrial chemicals but is understood
+  to carve out certain consumer-product categories with their own
+  sector-specific regimes (e.g. pharmaceuticals, cosmetics) — TODO (real
+  applicant): confirm precisely how the sodium-hypochlorite disinfectant
+  SKUs (bulk/industrial-adjacent chemical framing) versus the IPMP soap
+  SKUs (cosmetics framing) each map onto GSO 2654:2025's actual scope
+  carve-outs once the regulation reaches final/adopted status, since a
+  draft-stage scope description should not be treated as settled.
+
+Individual member states additionally layer their OWN national bodies on
+top of the regional GSO framework — for example **Saudi Arabia's SFDA**
+(Saudi Food and Drug Authority) and **UAE's ESMA** (Emirates Authority for
+Standardization and Metrology) / **MOHAP** (Ministry of Health and
+Prevention). This dossier deliberately does NOT assert with certainty which
+specific national body governs which SKU in which country — that requires
+local counsel to confirm per-country, per-product-category. Where a
+national-body decision is needed, this dossier refers to **"the applicable
+national body"** rather than naming one, to avoid asserting false certainty.
+
+## 2. Target markets in this program
+
+Per `hygaccess.registry/valid-market-countries` and `products.edn`, the
+Gulf/MENA countries this program's catalog references are **SA** (Saudi
+Arabia), **AE** (UAE), and **EG** (Egypt — MENA, not strictly GCC/GSO, but
+grouped with this region in this program's own market taxonomy; Egypt has
+its own separate national regulatory framework outside GSO and is NOT
+covered by this dossier — TODO (real applicant): a separate Egypt-specific
+regulatory track is needed if pursuing that market, out of scope here).
+
+Per the store's own `market-entry-approvals` ground-truth table
+(`hygaccess.store/sample-data!`), SA and AE are marked `:approved? true`
+(seed/demo data only — NOT a claim of real regulatory approval; see
+repository README) and EG is marked `:approved? false` pending review — a
+real `:propose-market-entry` proposal against EG is correctly HARD-held by
+this actor's own governor until that review genuinely completes.
+
+## 3. Draft dossier outline
+
+### 3.1 Product / SDS declaration under GSO 2654:2025-style GHS classification
+
+| Field | Draft value | Source |
+|---|---|---|
+| Product | Hygiene Access 次亜塩素酸ナトリウム環境表面消毒剤 0.1% (surface disinfectant) | `products.edn` `int.hygaccess.surface-disinfectant` |
+| Active | Sodium hypochlorite (NaOCl), 0.1% ready-to-use | `hygaccess.registry/efficacy-window-pct` |
+| GHS hazard classification | TODO (real applicant) — sodium hypochlorite solutions typically carry corrosive/skin-irritant/aquatic-hazard GHS classification bands depending on concentration; a real SDS must be prepared per GHS Rev. 10 criteria by a qualified person, not generated by this repo |
+| SDS language | Draft GSO 2654:2025 requires English + Arabic (bilingual) SDS and label content per public notification material | External regulation, not this repo |
+| SDS review cadence | Update within 18 months of new information; review at least every 3 years even without new information (per Draft GSO 2654:2025 public notification material at research time — reconfirm against final adopted text) | External regulation, not this repo |
+
+### 3.2 Gulf Conformity Mark application checklist
+
+- [ ] Determine which GSO technical regulation(s) actually apply to each
+      SKU once GSO 2654:2025 (or its successor final text) is adopted —
+      this dossier does not assert final applicability while the
+      regulation remains draft-stage.
+      - See `hygaccess.registry/valid-packaging-formats` for this
+        program's own closed BOP-appropriate packaging set — cross-check
+        against Gulf Conformity Mark labeling/packaging requirements once
+        known.
+- [ ] Prepare bilingual (Arabic/English) SDS and label content.
+- [ ] Engage a GSO-recognized conformity-assessment body for testing/
+      certification leading to the Gulf Conformity Mark.
+- [ ] Confirm import/registration requirements for the specific product
+      category (disinfectant/biocide vs. cosmetic) with the GSO-recognized
+      body.
+
+### 3.3 National-body add-on requirements placeholder
+
+- **Saudi Arabia** — TODO (real applicant): confirm with **SFDA** (or
+  successor) whether additional national registration is required on top
+  of/instead of the regional Gulf Conformity Mark route for this product
+  category, and which SFDA division (food/drug vs. consumer chemical
+  product) has jurisdiction.
+- **UAE** — TODO (real applicant): confirm with **ESMA**/**MOHAP** (or the
+  applicable national body) whether additional national registration is
+  required on top of/instead of the regional route, and which body has
+  jurisdiction for a disinfectant vs. a cosmetic-soap SKU respectively.
+- This dossier intentionally stops short of asserting a specific national
+  body per SKU beyond naming the two most commonly cited bodies above as
+  STARTING POINTS for local counsel to confirm — see repository-wide
+  disclaimer in `docs/regulatory/README.md`.
+
+## 4. Cross-reference to this actor's own governed data model
+
+As in the India dossier, the label/claim content this dossier would
+eventually propose should be the SAME claim set
+`hygaccess.registry/substantiated-claims` already restricts this actor's
+own `:propose-marketing-claim` proposals to, and any batch data cited in a
+real SDS/product declaration should be backed by the same GMP raw-material-
+lot / IPQC / CoA batch-release model added to this repo (see the India
+dossier section 2.2 for the detailed cross-reference — not repeated here to
+avoid duplication; both dossiers point at the same
+`hygaccess.registry`/`hygaccess.governor` source of truth).
+
+## 5. Checklist of what a real applicant still needs
+
+- [ ] Final (non-draft) text of GSO 2654:2025 or its successor, confirmed
+      directly with GSO.
+- [ ] A real GHS-compliant SDS prepared by a qualified person, not
+      generated from this repo's data.
+- [ ] Engagement with a GSO-recognized conformity-assessment body.
+- [ ] Confirmation of the applicable national body (SFDA/ESMA/MOHAP or
+      other) per target country and per SKU category.
+- [ ] Local counsel registered to file in the applicable Gulf
+      jurisdiction(s).

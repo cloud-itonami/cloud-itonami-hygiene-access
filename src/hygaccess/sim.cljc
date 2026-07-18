@@ -24,8 +24,17 @@
   non-BOP-appropriate format, a market-entry proposal targeting a
   not-yet-approved country, a market-entry proposal priced above its
   product type's own affordability ceiling, a marketing-claim proposal
-  citing an unsubstantiated claim, and a market-entry proposal citing
-  an unlicensed distribution-channel partner.
+  citing an unsubstantiated claim, a market-entry proposal citing an
+  unlicensed distribution-channel partner, a production-batch patch
+  citing a raw-material lot that is NOT verified/registered (GMP
+  raw-material release), a production-batch patch citing a lot whose
+  own Certificate of Analysis (CoA) has NOT been received, a
+  production-batch patch citing a lot whose own CoA assay result is
+  implausible for its active, a production-batch patch whose own
+  in-process-QC (IPQC) mixing-homogeneity coefficient-of-variation
+  exceeds the 5.0% threshold, and a shipment coordinated against a
+  batch that does not have a passing CoA / in-threshold homogeneity on
+  file (the GMP 'batch release' QA sign-off gate).
 
   Like every sibling actor's own demo, each check is exercised directly
   and independently below, one request per HARD-hold scenario -- the
@@ -236,6 +245,53 @@
                         :value {:product-type :antibacterial-soap :country "IN"
                                 :price-minor 200000 :channel :licensed-informal-retail-aggregator
                                 :channel-partner-id "partner-retail-2"}}
+                       coordinator))
+
+    (println "== log-production-batch batch-005 citing a NOT verified/registered raw-material lot (GMP) -> HARD hold ==")
+    (println (exec-op actor "h19"
+                       {:op :log-production-batch :effect :propose :subject "batch-005"
+                        :patch {:product-type :water-purification-drops
+                                :active :sodium-hypochlorite :concentration-pct 1.0
+                                :raw-material-lot-number "RM-LOT-NAOCL-003"}}
+                       coordinator))
+
+    (println "== log-production-batch batch-006 citing a raw-material lot whose CoA has NOT been received -> HARD hold ==")
+    (println (exec-op actor "h20"
+                       {:op :log-production-batch :effect :propose :subject "batch-006"
+                        :patch {:product-type :water-purification-drops
+                                :active :sodium-hypochlorite :concentration-pct 1.0
+                                :raw-material-lot-number "RM-LOT-NAOCL-004"}}
+                       coordinator))
+
+    (println "== log-production-batch batch-007 citing a raw-material lot with an implausible CoA assay result -> HARD hold ==")
+    (println (exec-op actor "h21"
+                       {:op :log-production-batch :effect :propose :subject "batch-007"
+                        :patch {:product-type :water-purification-drops
+                                :active :sodium-hypochlorite :concentration-pct 1.0
+                                :raw-material-lot-number "RM-LOT-NAOCL-005"}}
+                       coordinator))
+
+    (println "== log-production-batch batch-001 with an IPQC mixing-homogeneity CoV above the 5.0% threshold -> HARD hold ==")
+    (println (exec-op actor "h22"
+                       {:op :log-production-batch :effect :propose :subject "batch-001"
+                        :patch {:ipqc {:ph-check-pass? true :assay-mid-batch-pct 1.0
+                                       :mixing-homogeneity-cov-pct 7.5}}}
+                       coordinator))
+
+    (println "== coordinate-shipment ship-4 on a verified/registered/within-weight batch whose CoA has NOT passed -> HARD hold (batch-release QA sign-off incomplete) ==")
+    (println (exec-op actor "h23"
+                       {:op :log-production-batch :effect :propose :subject "batch-004"
+                        :patch {:product-type :water-purification-drops
+                                :active :sodium-hypochlorite :concentration-pct 1.0
+                                :weight-kg 200.0 :verified? true :registered? true
+                                :coa {:coa-assay-result-pct 1.0 :coa-tested-by "QA-lab-1"
+                                      :coa-date "2026-07-18" :coa-pass? false}
+                                :ipqc {:mixing-homogeneity-cov-pct 2.0}}}
+                       coordinator))
+    (println (exec-op actor "h23b"
+                       {:op :coordinate-shipment :effect :propose :subject "ship-4"
+                        :value {:batch-id "batch-004" :weight-kg 10.0
+                                :destination "informal-retail-west"}}
                        coordinator))
 
     (println "\n== audit ledger ==")

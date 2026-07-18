@@ -17,10 +17,16 @@
   proposal's own target country is actually approved, whether its
   price-point actually stays within the product type's own
   affordability ceiling, whether its channel-partner is actually
-  licensed for the declared channel, or whether a marketing-claim
+  licensed for the declared channel, whether a marketing-claim
   proposal's own claim is actually a substantiated, pre-approved
-  claim -- so this MUST be a separate system able to *reject* a
-  proposal and fall back to HOLD.
+  claim, whether a production batch's cited raw-material lot has
+  actually been verified/registered/CoA-received with a plausible
+  assay result (GMP raw-material release), whether a batch's own
+  in-process-QC mixing-homogeneity reading actually stays within
+  threshold, or whether a batch actually has a passing Certificate of
+  Analysis AND an in-threshold homogeneity reading on file before it
+  may ship (GMP batch-release sign-off) -- so this MUST be a separate
+  system able to *reject* a proposal and fall back to HOLD.
 
   `:itonami.blueprint/governor` is
   `:hygiene-access-operations-governor` (see
@@ -223,7 +229,93 @@
                                               disease X' style health
                                               claims against a
                                               vulnerable population.
-   20. Confidence floor / high-stakes
+   20. Raw-material lot not
+       verified/registered (GMP)           -- for `:log-production-
+                                              batch`, when the EFFECTIVE
+                                              `:raw-material-lot-number`
+                                              (patch's own value, else
+                                              the batch's already-
+                                              recorded value) is
+                                              declared, INDEPENDENTLY
+                                              verify that lot exists and
+                                              is both `:verified?` AND
+                                              `:registered?` -- never
+                                              taken on the advisor's
+                                              self-report. Mirrors the
+                                              equipment/batch verified-
+                                              gate pattern exactly,
+                                              applied to a raw-material
+                                              supply lot.
+   21. Raw-material lot CoA not
+       received (GMP)                      -- for `:log-production-
+                                              batch`, when the EFFECTIVE
+                                              raw-material lot IS
+                                              verified/registered,
+                                              INDEPENDENTLY verify that
+                                              lot's own `:coa-received?`
+                                              is true -- a lot without
+                                              its own Certificate of
+                                              Analysis on file may not
+                                              back a production batch.
+   22. Raw-material lot assay
+       implausible (GMP)                   -- for `:log-production-
+                                              batch`, when the EFFECTIVE
+                                              raw-material lot HAS
+                                              received its CoA,
+                                              INDEPENDENTLY re-verify
+                                              that lot's own `:coa-
+                                              assay-pct` falls within
+                                              its own active's closed
+                                              plausibility window
+                                              (`hygaccess.registry/
+                                              raw-material-assay-
+                                              plausible?`) -- a CoA
+                                              assay wildly outside
+                                              plausible purity for that
+                                              active is fabricated/
+                                              supplier-error data.
+   23. Mixing-homogeneity CoV
+       exceeds threshold (IPQC)            -- for `:log-production-
+                                              batch`, when the EFFECTIVE
+                                              `:ipqc` record declares a
+                                              `:mixing-homogeneity-cov-
+                                              pct`, INDEPENDENTLY
+                                              re-verify it does not
+                                              exceed `hygaccess.
+                                              registry/homogeneity-cov-
+                                              threshold-pct` (5.0%) --
+                                              never taken on the
+                                              advisor's self-report that
+                                              mixing was homogeneous. In
+                                              a real deployment this
+                                              number would come from a
+                                              physical IPQC sample or a
+                                              CFD mixing-tank simulation
+                                              (sibling repo `kotoba-
+                                              lang/kami-app-hygaccess-
+                                              plant`, name-only
+                                              reference, no code
+                                              dependency).
+   24. Batch-release QC incomplete
+       (CoA + IPQC sign-off)               -- for `:coordinate-
+                                              shipment`, INDEPENDENTLY
+                                              re-derive the referenced
+                                              batch's OWN recorded
+                                              `:coa`/`:ipqc` fields
+                                              (never the shipment
+                                              proposal's own self-
+                                              report, which does not
+                                              even carry these fields)
+                                              and verify `hygaccess.
+                                              registry/batch-release-qc-
+                                              complete?` -- a batch may
+                                              not be shipped without a
+                                              passing Certificate of
+                                              Analysis AND a mixing-
+                                              homogeneity reading within
+                                              threshold, the GMP 'batch
+                                              release' QA sign-off gate.
+   25. Confidence floor / high-stakes
        gate                                -- LLM confidence below
                                               threshold, OR the
                                               proposal's own `:stake`
@@ -542,6 +634,107 @@
         [{:rule :claim-not-substantiated
           :detail (str "\"" claim "\" は product-type " product-type " の承認済み実証済みクレーム集合に無い")}]))))
 
+;; ----------------------------- GMP raw-material-lot validation -----------------------------
+
+(defn- raw-material-lot-not-verified-violations
+  "For `:log-production-batch`, when the EFFECTIVE `:raw-material-lot-
+  number` (patch's own value, else the batch's already-recorded value)
+  is declared, INDEPENDENTLY verify that lot exists and is both
+  `:verified?` AND `:registered?` -- never trust the advisor's own
+  report. Mirrors the equipment/batch verified-gate pattern exactly,
+  applied to a raw-material supply lot."
+  [{:keys [op subject]} proposal st]
+  (when (= op :log-production-batch)
+    (let [patch (:value proposal)
+          existing (store/batch st subject)
+          lot-number (effective :raw-material-lot-number patch existing)]
+      (when (some? lot-number)
+        (let [lot (store/raw-material-lot st lot-number)]
+          (when-not (and lot (registry/raw-material-lot-ready? lot))
+            [{:rule :raw-material-lot-not-verified
+              :detail (str lot-number " は未検証または未登録、もしくは存在しない原材料ロット -- 検証済み・登録済みロット記録が無い状態でのバッチ記録")}]))))))
+
+(defn- raw-material-lot-coa-not-received-violations
+  "For `:log-production-batch`, when the EFFECTIVE raw-material lot IS
+  verified/registered, INDEPENDENTLY verify that lot's own `:coa-
+  received?` is true -- a lot without its own Certificate of Analysis
+  on file may not back a production batch."
+  [{:keys [op subject]} proposal st]
+  (when (= op :log-production-batch)
+    (let [patch (:value proposal)
+          existing (store/batch st subject)
+          lot-number (effective :raw-material-lot-number patch existing)]
+      (when (some? lot-number)
+        (let [lot (store/raw-material-lot st lot-number)]
+          (when (and lot (registry/raw-material-lot-ready? lot)
+                     (not (registry/raw-material-lot-coa-received? lot)))
+            [{:rule :raw-material-lot-coa-not-received
+              :detail (str lot-number " は Certificate of Analysis (CoA) 未受領")}]))))))
+
+(defn- raw-material-lot-assay-implausible-violations
+  "For `:log-production-batch`, when the EFFECTIVE raw-material lot HAS
+  received its CoA, INDEPENDENTLY re-verify that lot's own `:coa-
+  assay-pct` falls within its own active's closed plausibility window
+  (`hygaccess.registry/raw-material-assay-plausible?`) -- a CoA assay
+  wildly outside plausible purity for that active is fabricated/
+  supplier-error data, never trusted as-is."
+  [{:keys [op subject]} proposal st]
+  (when (= op :log-production-batch)
+    (let [patch (:value proposal)
+          existing (store/batch st subject)
+          lot-number (effective :raw-material-lot-number patch existing)]
+      (when (some? lot-number)
+        (let [lot (store/raw-material-lot st lot-number)]
+          (when (and lot (registry/raw-material-lot-ready? lot)
+                     (registry/raw-material-lot-coa-received? lot)
+                     (not (registry/raw-material-assay-plausible? (:active lot) (:coa-assay-pct lot))))
+            [{:rule :raw-material-lot-assay-implausible
+              :detail (str lot-number " (active=" (:active lot) ") のCoA assay(" (:coa-assay-pct lot)
+                           "%) が妥当性窓" (pr-str (registry/raw-material-assay-plausibility-window-for (:active lot)))
+                           "%の範囲外")}]))))))
+
+;; ----------------------------- in-process QC (IPQC) mixing-homogeneity validation -----------------------------
+
+(defn- mixing-homogeneity-cov-exceeds-threshold-violations
+  "For `:log-production-batch`, when the EFFECTIVE `:ipqc` record
+  (patch's own value, else the batch's already-recorded value) declares
+  a `:mixing-homogeneity-cov-pct`, INDEPENDENTLY re-verify it does not
+  exceed `hygaccess.registry/homogeneity-cov-threshold-pct` -- never
+  taken on the advisor's self-report that mixing was homogeneous. In a
+  real deployment this coefficient-of-variation number would come from
+  either a physical IPQC sample or a CFD mixing-tank simulation (see
+  sibling repo `kotoba-lang/kami-app-hygaccess-plant`, referenced here
+  by NAME ONLY -- a loose EDN-field-level convention, no code
+  dependency on that repo)."
+  [{:keys [op subject]} proposal st]
+  (when (= op :log-production-batch)
+    (let [patch (:value proposal)
+          existing (store/batch st subject)
+          ipqc (effective :ipqc patch existing)
+          cov (:mixing-homogeneity-cov-pct ipqc)]
+      (when (and (some? cov) (not (registry/homogeneity-within-threshold? cov)))
+        [{:rule :mixing-homogeneity-cov-exceeds-threshold
+          :detail (str subject " の IPQC 混合均一性CoV(" cov "%) が閾値("
+                       registry/homogeneity-cov-threshold-pct "%)を超過")}]))))
+
+;; ----------------------------- Certificate of Analysis (CoA) / batch-release sign-off validation -----------------------------
+
+(defn- batch-release-qc-incomplete-violations
+  "For `:coordinate-shipment`, INDEPENDENTLY re-derive the referenced
+  batch's OWN recorded `:coa`/`:ipqc` fields (never the shipment
+  proposal's own self-report, which does not even carry these fields)
+  and verify `hygaccess.registry/batch-release-qc-complete?` -- a batch
+  may not be shipped without a passing Certificate of Analysis AND a
+  mixing-homogeneity reading within threshold, the GMP 'batch release'
+  QA sign-off gate."
+  [{:keys [op]} proposal st]
+  (when (= op :coordinate-shipment)
+    (let [batch-id (:batch-id (:value proposal))
+          b (and batch-id (store/batch st batch-id))]
+      (when (and b (not (registry/batch-release-qc-complete? b)))
+        [{:rule :batch-release-qc-incomplete
+          :detail (str batch-id " は CoA未合格または IPQC混合均一性CoVが閾値超過のため出荷判定(batch release)未完了")}]))))
+
 ;; ----------------------------- stake derivation (advisor self-report, SOFT layer only) -----------------------------
 
 (defn stake-for
@@ -586,7 +779,12 @@
                            (market-not-approved-violations request proposal st)
                            (price-above-ceiling-violations request proposal)
                            (channel-partner-not-licensed-violations request proposal st)
-                           (claim-not-substantiated-violations request proposal)))
+                           (claim-not-substantiated-violations request proposal)
+                           (raw-material-lot-not-verified-violations request proposal st)
+                           (raw-material-lot-coa-not-received-violations request proposal st)
+                           (raw-material-lot-assay-implausible-violations request proposal st)
+                           (mixing-homogeneity-cov-exceeds-threshold-violations request proposal st)
+                           (batch-release-qc-incomplete-violations request proposal st)))
         conf (:confidence proposal 0.0)
         low? (< conf confidence-floor)
         stakes? (boolean (high-stakes (:stake proposal)))

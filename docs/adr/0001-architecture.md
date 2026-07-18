@@ -14,6 +14,11 @@ record. A LATER, separate superproject-side ADR (in
 into the west manifest and fleet; that ADR references this one, not
 the reverse.
 
+Extended, additively, by `docs/adr/0002-gmp-and-regulatory-dossiers.md`
+(GMP-style raw-material-lot/IPQC/CoA batch-release checks + regulatory
+dossier drafts) — none of this ADR's 19 HARD + 1 SOFT checks were
+removed or renamed by that extension.
+
 ## Context
 
 `cloud-itonami-hygiene-access` publishes an OSS blueprint for

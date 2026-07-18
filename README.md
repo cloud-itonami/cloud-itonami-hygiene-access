@@ -12,6 +12,8 @@ Sodium hypochlorite and isopropylmethylphenol are both long-off-patent, publicly
 - `:surface-disinfectant` — sodium hypochlorite, 0.05–0.5% ready-to-use concentration (matches `etzhayyim/com-etzhayyim-yakushi`'s own already-declared window for its sodium-hypochlorite surface-use-class product, reused here for cross-fleet consistency)
 - `:antibacterial-soap` — isopropylmethylphenol, 0.1–0.3% concentration (representative of real-world OTC medicated/antibacterial soap formulation concentrations)
 
+This build also carries a GMP (Good Manufacturing Practice) -style batch-record/QA data model — raw-material-lot release verification (`hygaccess.registry`'s `raw-material-lot-*` functions + `hygaccess.store`'s `raw-material-lots` table), an in-process-QC (IPQC) mixing-homogeneity coefficient-of-variation check, and a Certificate-of-Analysis (CoA) / batch-release sign-off gate before shipment — plus three regulatory filing DRAFT/TEMPLATE dossier outlines per target region under `docs/regulatory/` (India/CDSCO, Gulf/GSO, ASEAN/BPOM+Philippines-FDA). Both are additions of REALISM to this actor's own simulation, per `docs/adr/0002-gmp-and-regulatory-dossiers.md` — see `What this actor does NOT do` below, which remains fully in force: none of this makes the batch-record model a real GMP certification, or the dossiers a real regulatory filing.
+
 ## What this actor does
 
 Proposes **hygiene/disinfectant commercialization coordination**, not equipment operation, certification decision-making, or literal real-world sales execution:
@@ -35,6 +37,8 @@ Proposes **hygiene/disinfectant commercialization coordination**, not equipment 
 - Is NOT a real chemical-manufacturing control system — every op is a proposal/draft, never a real formulation-line actuation
 - Is NOT literal real-world sales infrastructure — a `:propose-market-entry` commit is a DRAFT go-to-market record, not an executed sale, payment, or logistics dispatch
 - Any real deployment of this program would still need the applicable local regulatory approval (e.g. India CDSCO/BIS, GCC conformity bodies, ASEAN member-state regulators) before market entry — this actor's own `market-entry-approvals` ground-truth table records that approval status, it does not itself grant it
+- Is NOT a real GMP-certified manufacturing facility, a real accredited testing laboratory, or a real Certificate of Analysis — the raw-material-lot/IPQC/CoA batch-record model under `hygaccess.registry`/`hygaccess.store` is a SIMULATED data shape enforced with the same governor discipline as every other check, not real facility/lab data (see `docs/adr/0002-gmp-and-regulatory-dossiers.md`)
+- The `docs/regulatory/` dossiers are NOT filed submissions, NOT legal advice, and NOT a claim that any product has actually been approved by any real regulatory authority — see `docs/regulatory/README.md`'s disclaimer
 - ONLY proposes/coordinates operations back-office and go-to-market drafts; all actuation, all certification decisions, and all real regulatory approvals require the appropriate human or authority
 - Safety-concern flagging, market-entry proposals, and marketing-claim proposals ALWAYS escalate — never auto-decided, no confidence threshold or phase below escalation
 
@@ -51,7 +55,7 @@ A formulation-batch record may never declare BOTH a sodium-hypochlorite active A
 Classic governed-actor pattern (`hygaccess.operation/build`, a langgraph-clj StateGraph):
 1. **`hygaccess.advisor`** (sealed intelligence node, `HygieneAccessAdvisor`): proposes decisions only, never commits
 2. **`hygaccess.governor`** (independent, `Hygiene Access Operations Governor`): validates against domain rules, re-derived from `hygaccess.registry`'s pure functions and `hygaccess.store`'s SSoT — never trusts the advisor's own self-report
-   - HARD invariants (always `:hold`, no override), elaborated into 19 concrete checks:
+   - HARD invariants (always `:hold`, no override), elaborated into 24 concrete checks (19 from `docs/adr/0001-architecture.md` + 5 GMP checks added by `docs/adr/0002-gmp-and-regulatory-dossiers.md`):
      - Plant/batch record must be independently verified/registered (`:verified?` AND `:registered?`) before any action is taken against it (equipment before maintenance scheduling, batch before shipment coordination)
      - The request's own `:effect` must be `:propose` (never a direct-write bypass)
      - `:op` must be in the closed seven-op allowlist
@@ -70,6 +74,11 @@ Classic governed-actor pattern (`hygaccess.operation/build`, a langgraph-clj Sta
      - No market-entry proposal priced above its product type's own closed affordability ceiling
      - No market-entry proposal citing a distribution-channel partner not independently marked `:licensed?` and serving the declared channel
      - No marketing-claim proposal citing a claim outside the closed, pre-substantiated set
+     - A production-batch's cited raw-material lot must independently be `:verified?` AND `:registered?` (GMP raw-material release)
+     - That lot must independently have RECEIVED its own Certificate of Analysis (`:coa-received?`)
+     - That lot's own CoA assay result must independently fall within its active's closed plausibility window
+     - A batch's own in-process-QC (IPQC) mixing-homogeneity coefficient-of-variation must independently stay ≤5.0%
+     - A shipment may not be coordinated against a batch that does not independently have a passing CoA AND an in-threshold IPQC homogeneity reading on file (the GMP "batch release" QA sign-off gate)
    - ESCALATE (always human sign-off, overridable by a human):
      - `:flag-safety-concern`, `:propose-market-entry`, and `:propose-marketing-claim` always escalate, regardless of confidence
      - A market-entry price at/above 80% of its own ceiling is an additional high-stakes signal
@@ -80,6 +89,10 @@ Classic governed-actor pattern (`hygaccess.operation/build`, a langgraph-clj Sta
 ## Commercial catalog
 
 See `products.edn` at repo root for four representative SKUs (water-purification drops, surface disinfectant, antibacterial soap bar, antibacterial liquid soap) with formulation, packaging, pricing, target-market, marketing-claim, and distribution-channel data consistent with this actor's own closed registry tables.
+
+## Regulatory dossier drafts
+
+`docs/regulatory/` holds three DRAFT/TEMPLATE regulatory filing outlines (India/CDSCO, Gulf/GSO, ASEAN/BPOM+Philippines-FDA), prepared as a starting point for local regulatory counsel — see `docs/regulatory/README.md` for the index, the SKU → regulatory-track mapping, and the prominent disclaimer that applies to all three (NOT filed submissions, NOT legal advice, NOT a claim of actual approval anywhere).
 
 ## Development
 
@@ -99,7 +112,7 @@ clojure -M:lint
 
 ## Status
 
-`:implemented` — `governor.cljc`/`store.cljc`/`advisor.cljc`/`registry.cljc`/`phase.cljc`/`operation.cljc` + `deps.edn` complete the module set; tests green, demo runnable, langgraph-clj integration verified.
+`:implemented` — `governor.cljc`/`store.cljc`/`advisor.cljc`/`registry.cljc`/`phase.cljc`/`operation.cljc` + `deps.edn` complete the module set; tests green (104 tests / 362 assertions), demo runnable, langgraph-clj integration verified. See `docs/adr/0001-architecture.md` for the original architecture and `docs/adr/0002-gmp-and-regulatory-dossiers.md` for the GMP batch-record/QA model + regulatory dossier drafts added on top of it.
 
 ## License
 
