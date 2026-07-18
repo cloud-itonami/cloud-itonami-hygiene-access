@@ -160,3 +160,99 @@
   (let [s (store/mem-store)]
     (store/append-ledger! s {:t :x})
     (is (= (store/ledger s) (store/get-ledger s)))))
+
+;; ----------------------------- MES/CFD telemetry-reading -----------------------------
+
+(deftest mes-reading-record-commits-and-advances-sequence
+  (let [s (seeded)]
+    (store/commit-record! s {:effect :mes-reading/record :path ["mes-1"]
+                             :value {:batch-id "batch-001" :temperature-c 28.0 :ph 11.5
+                                     :mixing-rpm 120.0 :mixing-homogeneity-cov-pct 2.0
+                                     :source :mock-mes}})
+    (is (= "MES-000000" (get (first (store/mes-reading-history s)) "record_id")))
+    (is (= "mes-reading-draft" (get (first (store/mes-reading-history s)) "kind")))
+    (is (= 1 (count (store/mes-reading-history s))))
+    (is (= 1 (store/next-mes-reading-sequence s)))
+    (is (= "batch-001" (:batch-id (store/mes-reading s "mes-1"))))
+    (is (= "MES-000000" (:reading-number (store/mes-reading s "mes-1"))))
+    (is (= 1 (count (store/all-mes-readings s))))))
+
+(deftest mes-readings-for-batch-oldest-first
+  (let [s (seeded)]
+    (store/commit-record! s {:effect :mes-reading/record :path ["mes-1"]
+                             :value {:batch-id "batch-001" :mixing-homogeneity-cov-pct 2.0}})
+    (store/commit-record! s {:effect :mes-reading/record :path ["mes-2"]
+                             :value {:batch-id "batch-002" :mixing-homogeneity-cov-pct 3.0}})
+    (store/commit-record! s {:effect :mes-reading/record :path ["mes-3"]
+                             :value {:batch-id "batch-001" :mixing-homogeneity-cov-pct 2.2}})
+    (is (= ["mes-1" "mes-3"] (mapv :id (store/mes-readings-for-batch s "batch-001"))))
+    (is (= ["mes-2"] (mapv :id (store/mes-readings-for-batch s "batch-002"))))
+    (is (= [] (store/mes-readings-for-batch s "batch-999")))))
+
+;; ----------------------------- regulatory-submission-status -----------------------------
+
+(deftest regulatory-submission-transition-commits-and-merges-in-place
+  (let [s (store/mem-store)]
+    (store/commit-record! s {:effect :regulatory-submission/transition :path ["reg-1"]
+                             :value {:market "SA" :product-type :surface-disinfectant
+                                     :to-status :counsel-review}})
+    (is (= :counsel-review (:status (store/regulatory-submission s "reg-1"))))
+    (is (= "SA" (:market (store/regulatory-submission s "reg-1"))))
+    (store/commit-record! s {:effect :regulatory-submission/transition :path ["reg-1"]
+                             :value {:to-status :submitted :filed-by "counsel"
+                                     :filing-date "2026-07-18" :agency-reference "REF-1"}})
+    (is (= :submitted (:status (store/regulatory-submission s "reg-1"))))
+    (is (= "SA" (:market (store/regulatory-submission s "reg-1"))) "market preserved across merge")
+    (is (= "counsel" (:filed-by (store/regulatory-submission s "reg-1"))))
+    (is (= 1 (count (store/all-regulatory-submissions s))))))
+
+(deftest all-market-approvals-returns-every-seeded-entry
+  (let [s (seeded)]
+    (is (= 8 (count (store/all-market-approvals s))))
+    (is (= 6 (count (filter :approved? (store/all-market-approvals s)))))))
+
+(deftest sample-data-seeds-one-approved-regulatory-submission
+  (let [s (seeded)]
+    (is (= :approved (:status (store/regulatory-submission s "REG-IN-water-purification-drops"))))
+    (is (= "IN" (:market (store/regulatory-submission s "REG-IN-water-purification-drops"))))
+    (is (= 1 (count (store/all-regulatory-submissions s))))))
+
+;; ----------------------------- sales quote/order/fulfillment (NO payment) -----------------------------
+
+(deftest sales-order-propose-commits-defaults-pending-fulfillment-and-advances-sequence
+  (let [s (seeded)]
+    (store/commit-record! s {:effect :sales-order/propose :path ["ord-1"]
+                             :value {:buyer-ref "ngo-buyer-1"
+                                     :sku "int.hygaccess.water-purification-drops"
+                                     :quantity 100 :price-minor 350000 :market "IN"}})
+    (is (= "ORD-000000" (get (first (store/sales-order-history s)) "record_id")))
+    (is (= "sales-order-draft" (get (first (store/sales-order-history s)) "kind")))
+    (is (= 1 (count (store/sales-order-history s))))
+    (is (= 1 (store/next-sales-order-sequence s)))
+    (is (= :pending (:fulfillment-status (store/sales-order s "ord-1"))))
+    (is (= "ORD-000000" (:order-number (store/sales-order s "ord-1"))))
+    (is (= 1 (count (store/all-sales-orders s))))))
+
+(deftest sales-order-fulfillment-transition-merges-in-place-not-a-new-record
+  (let [s (seeded)]
+    (store/commit-record! s {:effect :sales-order/propose :path ["ord-1"]
+                             :value {:buyer-ref "ngo-buyer-1"
+                                     :sku "int.hygaccess.water-purification-drops"
+                                     :quantity 100 :price-minor 350000 :market "IN"}})
+    (store/commit-record! s {:effect :sales-order/fulfillment-transition :path ["ord-1"]
+                             :value {:to-status :packed}})
+    (is (= :packed (:fulfillment-status (store/sales-order s "ord-1"))))
+    (is (= "ngo-buyer-1" (:buyer-ref (store/sales-order s "ord-1"))) "unrelated field preserved")
+    (is (= 1 (count (store/sales-order-history s)))
+        "the fulfillment transition does NOT create a second numbered sales-order record")))
+
+(deftest fresh-store-has-no-mes-readings-regulatory-submissions-or-sales-orders
+  (let [s (store/mem-store)]
+    (is (= [] (store/all-mes-readings s)))
+    (is (nil? (store/mes-reading s "mes-1")))
+    (is (= [] (store/all-regulatory-submissions s)))
+    (is (nil? (store/regulatory-submission s "reg-1")))
+    (is (= [] (store/all-sales-orders s)))
+    (is (nil? (store/sales-order s "ord-1")))
+    (is (zero? (store/next-mes-reading-sequence s)))
+    (is (zero? (store/next-sales-order-sequence s)))))

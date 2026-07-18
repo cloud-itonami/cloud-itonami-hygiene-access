@@ -6,6 +6,7 @@
   partner-licensing validation, independent of the governor/store/
   operation wiring."
   (:require [clojure.test :refer [deftest is testing]]
+            #?(:clj [clojure.edn :as edn])
             [hygaccess.registry :as registry]))
 
 (deftest known-actives-closed-set
@@ -196,3 +197,85 @@
                  (assoc clean :ipqc {:mixing-homogeneity-cov-pct 9.0})))
         "homogeneity CoV above threshold")
     (is (false? (registry/batch-release-qc-complete? {})))))
+
+;; ----------------------------- commercial catalog (SKU price ground truth) -----------------------------
+
+(deftest sku-catalog-known-skus
+  (is (true? (registry/sku-known? "int.hygaccess.water-purification-drops")))
+  (is (false? (registry/sku-known? "int.hygaccess.does-not-exist"))))
+
+(deftest sku-price-for-matches-catalog
+  (is (= 350000 (registry/sku-price-for "int.hygaccess.water-purification-drops")))
+  (is (= 700000 (registry/sku-price-for "int.hygaccess.surface-disinfectant")))
+  (is (= 150000 (registry/sku-price-for "int.hygaccess.antibacterial-soap-bar")))
+  (is (= 250000 (registry/sku-price-for "int.hygaccess.antibacterial-liquid-soap")))
+  (is (nil? (registry/sku-price-for "int.hygaccess.does-not-exist"))))
+
+(deftest sku-product-type-for-matches-catalog
+  (is (= :water-purification-drops (registry/sku-product-type-for "int.hygaccess.water-purification-drops")))
+  (is (= :antibacterial-soap (registry/sku-product-type-for "int.hygaccess.antibacterial-soap-bar"))))
+
+(deftest sku-price-mismatch-ground-truth
+  (is (false? (registry/sku-price-mismatch? "int.hygaccess.water-purification-drops" 350000)))
+  (is (true? (registry/sku-price-mismatch? "int.hygaccess.water-purification-drops" 1)))
+  (is (true? (registry/sku-price-mismatch? "int.hygaccess.does-not-exist" 350000))
+      "an unknown SKU has no ground-truth price to confirm against -- treated as a mismatch"))
+
+#?(:clj
+   (deftest sku-catalog-stays-in-sync-with-products-edn
+     (testing "hygaccess.registry/sku-catalog mirrors products.edn's own four SKUs -- keep both in sync on any catalog change"
+       (let [products (edn/read-string (slurp "products.edn"))]
+         (is (= 4 (count products)))
+         (doseq [p products
+                 :let [sku (:product/id p)
+                       price (:product/price-minor p)
+                       product-type (:hygaccess.product/product-type p)]]
+           (is (= price (registry/sku-price-for sku))
+               (str sku " price mismatch between products.edn and sku-catalog"))
+           (is (= product-type (registry/sku-product-type-for sku))
+               (str sku " product-type mismatch between products.edn and sku-catalog")))))))
+
+(deftest order-quantity-valid-range
+  (is (true? (registry/order-quantity-valid? 1)))
+  (is (true? (registry/order-quantity-valid? 100000)))
+  (is (false? (registry/order-quantity-valid? 0)))
+  (is (false? (registry/order-quantity-valid? -5)))
+  (is (false? (registry/order-quantity-valid? 100001)))
+  (is (false? (registry/order-quantity-valid? nil))))
+
+;; ----------------------------- fulfillment-status state machine -----------------------------
+
+(deftest fulfillment-transition-valid-happy-chain
+  (is (true? (registry/fulfillment-transition-valid? :pending :packed)))
+  (is (true? (registry/fulfillment-transition-valid? :packed :shipped)))
+  (is (true? (registry/fulfillment-transition-valid? :shipped :delivered))))
+
+(deftest fulfillment-transition-cancelled-only-from-pre-shipped-states
+  (is (true? (registry/fulfillment-transition-valid? :pending :cancelled)))
+  (is (true? (registry/fulfillment-transition-valid? :packed :cancelled)))
+  (is (false? (registry/fulfillment-transition-valid? :shipped :cancelled))
+      "cannot cancel a same-op-cancellation once already shipped")
+  (is (false? (registry/fulfillment-transition-valid? :delivered :cancelled))))
+
+(deftest fulfillment-transition-no-skipping-or-terminal-exit
+  (is (false? (registry/fulfillment-transition-valid? :pending :shipped)) "no skipping :packed")
+  (is (false? (registry/fulfillment-transition-valid? :delivered :pending)))
+  (is (false? (registry/fulfillment-transition-valid? :cancelled :pending))))
+
+;; ----------------------------- MES/CFD telemetry-reading + sales-order draft construction -----------------------------
+
+(deftest register-mes-reading-requires-reading-id
+  (is (thrown? #?(:clj Exception :cljs js/Error)
+               (registry/register-mes-reading "" 0))))
+
+(deftest register-mes-reading-produces-zero-padded-number
+  (let [{:strs [reading_number]} (registry/register-mes-reading "mes-1" 0)]
+    (is (= "MES-000000" reading_number))))
+
+(deftest register-sales-order-requires-order-id
+  (is (thrown? #?(:clj Exception :cljs js/Error)
+               (registry/register-sales-order "" 0))))
+
+(deftest register-sales-order-produces-zero-padded-number
+  (let [{:strs [order_number]} (registry/register-sales-order "ord-1" 0)]
+    (is (= "ORD-000000" order_number))))

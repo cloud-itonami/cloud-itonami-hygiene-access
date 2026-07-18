@@ -36,10 +36,17 @@
   (is (empty? (:writes (get phase/phases 0)))))
 
 (deftest phase-3-auto-commits-only-no-risk-ops
-  (testing ":log-production-batch carries no physical/financial/regulatory risk -- auto-eligible; it is the ONLY auto-eligible op in this domain"
-    (is (= #{:log-production-batch} (:auto (get phase/phases 3))))))
+  (testing ":log-production-batch and :record-mes-reading carry no physical/financial/regulatory risk -- both administrative logging of already-independently-verified data, auto-eligible; they are the ONLY two auto-eligible ops in this domain (docs/adr/0003-mes-regulatory-sales-extensions.md)"
+    (is (= #{:log-production-batch :record-mes-reading} (:auto (get phase/phases 3))))))
 
-(deftest phase-3-writes-all-seven-ops
+(deftest regulatory-submission-status-sales-order-fulfillment-status-never-auto-at-any-phase
+  (testing "structural invariant: :record-regulatory-submission-status/:propose-sales-order/:update-fulfillment-status are each a real consequential business/legal claim -- never auto-decided, mirrors :schedule-maintenance/:propose-market-entry/:propose-marketing-claim"
+    (doseq [[n {:keys [auto]}] phase/phases
+            op [:record-regulatory-submission-status :propose-sales-order :update-fulfillment-status]]
+      (is (not (contains? auto op))
+          (str "phase " n " must not auto-commit " op)))))
+
+(deftest phase-3-writes-matches-write-ops-set
   (is (= phase/write-ops (:writes (get phase/phases 3)))))
 
 (deftest schedule-maintenance-enabled-from-phase-3-only

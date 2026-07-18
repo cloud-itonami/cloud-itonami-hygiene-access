@@ -41,19 +41,39 @@
   regardless of phase -- multiple independent layers agree on where
   this actor's authority ends.
 
-  Like every sibling actor's phase-3 `:auto` set, this domain has only
-  ONE member (`:log-production-batch`) -- no separate no-risk lifecycle
-  distinct from ordinary record logging.")
+  Like every sibling actor's phase-3 `:auto` set, this domain originally
+  had only ONE member (`:log-production-batch`) -- no separate no-risk
+  lifecycle distinct from ordinary record logging.
+  `docs/adr/0003-mes-regulatory-sales-extensions.md` adds a SECOND
+  `:auto`-eligible op, `:record-mes-reading`: an MES/CFD telemetry
+  reading is, like `:log-production-batch`, ADMINISTRATIVE LOGGING of
+  an already-independently-verified instrument/simulation value, not a
+  go-to-market/financial/regulatory decision -- and the new HARD checks
+  (`hygaccess.governor` 25-30) already gate it tightly (batch must be
+  verified/registered, every sensor value physically plausible, and any
+  mismatch against a prior MES reading's own ground truth HARD-blocks)
+  before it can ever reach this auto-commit path. The other three new
+  ops added by that same ADR --
+  `:record-regulatory-submission-status` / `:propose-sales-order` /
+  `:update-fulfillment-status` -- are, like `:schedule-maintenance` /
+  `:propose-market-entry` / `:propose-marketing-claim`, deliberately
+  ABSENT from every phase's `:auto` set: a regulatory-submission
+  transition, a sales quote/order, and a fulfillment-status update are
+  each a real consequential business/legal claim, never auto-decided
+  regardless of confidence or how governor-clean the proposal is.")
 
 (def write-ops
   #{:log-production-batch :schedule-maintenance :flag-safety-concern
     :coordinate-shipment :propose-packaging-design
-    :propose-market-entry :propose-marketing-claim})
+    :propose-market-entry :propose-marketing-claim
+    :record-mes-reading :record-regulatory-submission-status
+    :propose-sales-order :update-fulfillment-status})
 
 ;; NOTE the invariant: `:schedule-maintenance`, `:propose-market-entry`,
-;; and `:propose-marketing-claim` are all members of `write-ops`
-;; (governor-gated like any write) but NEVER members of any phase's
-;; `:auto` set below. Do not add them there.
+;; `:propose-marketing-claim`, `:record-regulatory-submission-status`,
+;; `:propose-sales-order`, and `:update-fulfillment-status` are all
+;; members of `write-ops` (governor-gated like any write) but NEVER
+;; members of any phase's `:auto` set below. Do not add them there.
 (def phases
   "phase -> {:label .. :writes <ops allowed to write> :auto <ops allowed
   to auto-commit when governor-clean>}."
@@ -69,7 +89,7 @@
       :auto #{}}
    3 {:label "supervised-auto"
       :writes write-ops
-      :auto #{:log-production-batch}}})
+      :auto #{:log-production-batch :record-mes-reading}}})
 
 (def default-phase 3)
 

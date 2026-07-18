@@ -107,6 +107,61 @@
       (is (= :interrupted (:status result)))
       (is (= :commit (get-in (approve! actor "t7") [:state :disposition]))))))
 
+(deftest test-mes-reading-proposal
+  (testing "A clean MES/CFD telemetry reading auto-commits (phase 3, administrative logging, no physical/financial/regulatory decision)"
+    (let [s (-> (store/mem-store) (store/sample-data!))
+          actor (op/build s)
+          result (exec-op actor "t8"
+                          {:op :record-mes-reading :effect :propose :subject "mes-1"
+                           :value {:batch-id "batch-001" :temperature-c 28.0 :ph 11.5
+                                   :mixing-rpm 100.0 :mixing-homogeneity-cov-pct 2.0
+                                   :source :mock-mes}}
+                          coordinator)]
+      (is (= :commit (get-in result [:state :disposition]))))))
+
+(deftest test-regulatory-submission-status-proposal
+  (testing "Regulatory-submission-status transition always escalates for human approval (STATUS TRACKING ONLY, never a real filing)"
+    (let [s (-> (store/mem-store) (store/sample-data!))
+          actor (op/build s)
+          result (exec-op actor "t9"
+                          {:op :record-regulatory-submission-status :effect :propose :subject "reg-1"
+                           :value {:market "IN" :product-type :water-purification-drops
+                                   :to-status :counsel-review}}
+                          coordinator)]
+      (is (= :interrupted (:status result)))
+      (is (= :commit (get-in (approve! actor "t9") [:state :disposition]))))))
+
+(deftest test-sales-order-proposal
+  (testing "Sales-order proposal (market-approved, price matches registered SKU) always escalates for human approval -- never a real sale/payment"
+    (let [s (-> (store/mem-store) (store/sample-data!))
+          actor (op/build s)
+          result (exec-op actor "t10"
+                          {:op :propose-sales-order :effect :propose :subject "ord-1"
+                           :value {:buyer-ref "ngo-buyer-1"
+                                   :sku "int.hygaccess.water-purification-drops"
+                                   :quantity 100 :price-minor 350000 :market "IN"}}
+                          coordinator)]
+      (is (= :interrupted (:status result)))
+      (is (= :commit (get-in (approve! actor "t10") [:state :disposition]))))))
+
+(deftest test-fulfillment-status-proposal
+  (testing "Fulfillment-status transition always escalates for human approval"
+    (let [s (-> (store/mem-store) (store/sample-data!))
+          actor (op/build s)
+          _ (exec-op actor "t11a"
+                     {:op :propose-sales-order :effect :propose :subject "ord-2"
+                      :value {:buyer-ref "ngo-buyer-1"
+                              :sku "int.hygaccess.water-purification-drops"
+                              :quantity 100 :price-minor 350000 :market "IN"}}
+                     coordinator)
+          _ (approve! actor "t11a")
+          result (exec-op actor "t11b"
+                          {:op :update-fulfillment-status :effect :propose :subject "ord-2"
+                           :value {:to-status :packed}}
+                          coordinator)]
+      (is (= :interrupted (:status result)))
+      (is (= :commit (get-in (approve! actor "t11b") [:state :disposition]))))))
+
 (deftest test-ledger-is-append-only
   (testing "Audit ledger is append-only"
     (let [s (store/mem-store)

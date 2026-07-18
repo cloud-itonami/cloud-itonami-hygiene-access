@@ -80,6 +80,37 @@
                                 sign-off records -- see
                                 `hygaccess.registry`'s GMP raw-material-
                                 lot-release / IPQC / CoA sections.
+    - `mes-readings`         -- a logged MES/CFD-sourced equipment/batch
+                                telemetry reading DRAFT tied to an
+                                existing production batch
+                                (`hygaccess.registry/register-mes-
+                                reading`, `hygaccess.mes` for the
+                                integration contract + mock). Each
+                                reading is a NEW numbered record
+                                (`MES-000000` ...), never an update to
+                                an existing one.
+    - `regulatory-submissions` -- GROUND TRUTH regulatory-submission-
+                                STATUS TRACKING per (market, product-
+                                type) pair, `{:market .. :product-type ..
+                                :status .. :filed-by .. :filing-date ..
+                                :agency-reference ..}` -- see
+                                `hygaccess.regulatory` for the closed
+                                transition table. STATUS TRACKING ONLY;
+                                does not itself file anything with any
+                                real regulatory authority.
+    - `sales-orders`         -- a proposed quote/purchase-order DRAFT
+                                (`hygaccess.registry/register-sales-
+                                order`), buyer-reference + SKU +
+                                quantity + price, plus its own
+                                `:fulfillment-status`
+                                (`:pending`/`:packed`/`:shipped`/
+                                `:delivered`/`:cancelled`, see
+                                `hygaccess.registry/fulfillment-
+                                transitions`) updated in place by
+                                `:update-fulfillment-status`. NEVER a
+                                real sale, payment, or fund movement --
+                                a price here is a plain reference number
+                                on a record, nothing more.
 
   Plus a generic `records` map (id -> raw record) used only for
   direct, domain-agnostic `commit-record!` calls (a record with no
@@ -109,9 +140,17 @@
   (market-entry [s id])
   (marketing-claim [s id])
   (market-approval [s country] "ground-truth market-entry-approval record for a country")
+  (all-market-approvals [s] "every ground-truth market-entry-approval record on file")
   (channel-partner [s id] "ground-truth channel-partner record")
   (raw-material-lot [s lot-number] "ground-truth raw-material supply-lot record")
   (all-raw-material-lots [s])
+  (mes-reading [s id] "a logged MES/CFD-sourced telemetry-reading record")
+  (all-mes-readings [s])
+  (mes-readings-for-batch [s batch-id] "every MES reading on file for a batch, oldest-first")
+  (regulatory-submission [s id] "ground-truth regulatory-submission-status record")
+  (all-regulatory-submissions [s])
+  (sales-order [s id] "a proposed sales-order record, incl. its own :fulfillment-status")
+  (all-sales-orders [s])
   (safety-concerns [s] "the append-only safety-concern log")
   (ledger [s])
   (maintenance-history [s] "the append-only maintenance-schedule history (hygaccess.registry drafts)")
@@ -119,11 +158,15 @@
   (packaging-design-history [s] "the append-only packaging-design history")
   (market-entry-history [s] "the append-only market-entry history")
   (marketing-claim-history [s] "the append-only marketing-claim history")
+  (mes-reading-history [s] "the append-only MES/CFD-telemetry-reading history")
+  (sales-order-history [s] "the append-only sales-order history")
   (next-maintenance-sequence [s])
   (next-shipment-sequence [s])
   (next-packaging-design-sequence [s])
   (next-market-entry-sequence [s])
   (next-marketing-claim-sequence [s])
+  (next-mes-reading-sequence [s])
+  (next-sales-order-sequence [s])
   (maintenance-already-scheduled? [s maintenance-id] "has this maintenance window already been scheduled?")
   (commit-record! [s record] "apply a committed op's record to the SSoT")
   (append-ledger! [s fact] "append one immutable decision fact")
@@ -132,7 +175,8 @@
   (with-equipment [s equipment] "replace/seed the equipment directory (map id->equipment)")
   (with-market-approvals [s approvals] "replace/seed the market-entry-approvals directory (map country->approval)")
   (with-channel-partners [s partners] "replace/seed the channel-partners directory (map id->partner)")
-  (with-raw-material-lots [s lots] "replace/seed the raw-material-lots directory (map lot-number->lot)"))
+  (with-raw-material-lots [s lots] "replace/seed the raw-material-lots directory (map lot-number->lot)")
+  (with-regulatory-submissions [s subs] "replace/seed the regulatory-submissions directory (map id->submission)"))
 
 ;; ----------------------------- demo/sample data -----------------------------
 
@@ -241,6 +285,21 @@
                         :supplier "unverified spot-market supplier" :coa-received? true
                         :coa-assay-pct 40.0 :verified? true :registered? true}})
 
+(defn- sample-regulatory-submissions []
+  ;; ONE demonstration :approved regulatory-submission record (IN /
+  ;; water-purification-drops, with full human-supplied evidence) so
+  ;; `hygaccess.regulatory/market-approval-without-submission-warnings`
+  ;; has at least one "backed" approved market to contrast against the
+  ;; five OTHER approved markets (BD/ID/PH/SA/AE) that remain
+  ;; intentionally UNBACKED -- demonstrating both branches of the new
+  ;; non-breaking consistency WARNING (never a HARD block, see
+  ;; `hygaccess.regulatory` ns docstring 'NON-BREAKING WIRING NOTE').
+  {"REG-IN-water-purification-drops"
+   {:id "REG-IN-water-purification-drops" :market "IN"
+    :product-type :water-purification-drops :status :approved
+    :filed-by "local regulatory counsel (placeholder)" :filing-date "2026-05-01"
+    :agency-reference "CDSCO-REF-2026-0001-PLACEHOLDER"}})
+
 ;; ----------------------------- shared commit logic -----------------------------
 
 (defn- schedule-maintenance!
@@ -279,6 +338,20 @@
     {:result result
      :patch {:claim-number (get result "claim_number")}}))
 
+(defn- record-mes-reading!
+  [s reading-id]
+  (let [seq-n (next-mes-reading-sequence s)
+        result (registry/register-mes-reading reading-id seq-n)]
+    {:result result
+     :patch {:reading-number (get result "reading_number")}}))
+
+(defn- propose-sales-order!
+  [s order-id]
+  (let [seq-n (next-sales-order-sequence s)
+        result (registry/register-sales-order order-id seq-n)]
+    {:result result
+     :patch {:order-number (get result "order_number")}}))
+
 ;; ----------------------------- MemStore (default) -----------------------------
 
 (defrecord MemStore [a]
@@ -294,9 +367,20 @@
   (market-entry [_ id] (get-in @a [:market-entries id]))
   (marketing-claim [_ id] (get-in @a [:marketing-claims id]))
   (market-approval [_ country] (get-in @a [:market-entry-approvals country]))
+  (all-market-approvals [_] (vec (vals (:market-entry-approvals @a))))
   (channel-partner [_ id] (get-in @a [:channel-partners id]))
   (raw-material-lot [_ lot-number] (get-in @a [:raw-material-lots lot-number]))
   (all-raw-material-lots [_] (sort-by :lot-number (vals (:raw-material-lots @a))))
+  (mes-reading [_ id] (get-in @a [:mes-readings id]))
+  (all-mes-readings [_] (sort-by :reading-number (vals (:mes-readings @a))))
+  (mes-readings-for-batch [_ batch-id]
+    (->> (vals (:mes-readings @a))
+         (filter #(= batch-id (:batch-id %)))
+         (sort-by :reading-number)))
+  (regulatory-submission [_ id] (get-in @a [:regulatory-submissions id]))
+  (all-regulatory-submissions [_] (vec (vals (:regulatory-submissions @a))))
+  (sales-order [_ id] (get-in @a [:sales-orders id]))
+  (all-sales-orders [_] (sort-by :order-number (vals (:sales-orders @a))))
   (safety-concerns [_] (:safety-concerns @a))
   (ledger [_] (:ledger @a))
   (maintenance-history [_] (:maintenance-history @a))
@@ -304,11 +388,15 @@
   (packaging-design-history [_] (:packaging-design-history @a))
   (market-entry-history [_] (:market-entry-history @a))
   (marketing-claim-history [_] (:marketing-claim-history @a))
+  (mes-reading-history [_] (:mes-reading-history @a))
+  (sales-order-history [_] (:sales-order-history @a))
   (next-maintenance-sequence [_] (:maintenance-sequence @a 0))
   (next-shipment-sequence [_] (:shipment-sequence @a 0))
   (next-packaging-design-sequence [_] (:packaging-design-sequence @a 0))
   (next-market-entry-sequence [_] (:market-entry-sequence @a 0))
   (next-marketing-claim-sequence [_] (:marketing-claim-sequence @a 0))
+  (next-mes-reading-sequence [_] (:mes-reading-sequence @a 0))
+  (next-sales-order-sequence [_] (:sales-order-sequence @a 0))
   (maintenance-already-scheduled? [_ maintenance-id]
     (boolean (get-in @a [:maintenance maintenance-id :scheduled?])))
   (get-records [_] (:records @a))
@@ -381,6 +469,45 @@
                        (update :marketing-claim-history registry/append result))))
         result)
 
+      (= effect :mes-reading/record)
+      (let [reading-id (first path)
+            {:keys [result patch]} (record-mes-reading! s reading-id)]
+        (swap! a (fn [state]
+                   (-> state
+                       (update :mes-reading-sequence (fnil inc 0))
+                       (update-in [:mes-readings reading-id] merge (assoc value :id reading-id) patch)
+                       (update :mes-reading-history registry/append result))))
+        result)
+
+      ;; STATUS TRACKING ONLY -- does not file anything with any real
+      ;; regulatory system. Merge-into-existing-entity pattern (like
+      ;; :batch/upsert), not a new numbered draft record: an ongoing
+      ;; per-(market, product-type) status field, not a fresh proposal
+      ;; artifact each time.
+      (= effect :regulatory-submission/transition)
+      (let [sub-id (first path)]
+        (swap! a update-in [:regulatory-submissions sub-id]
+               merge (assoc (dissoc value :to-status) :status (:to-status value) :id sub-id)))
+
+      (= effect :sales-order/propose)
+      (let [order-id (first path)
+            {:keys [result patch]} (propose-sales-order! s order-id)]
+        (swap! a (fn [state]
+                   (-> state
+                       (update :sales-order-sequence (fnil inc 0))
+                       (update-in [:sales-orders order-id] merge
+                                  (assoc value :id order-id :fulfillment-status :pending) patch)
+                       (update :sales-order-history registry/append result))))
+        result)
+
+      ;; Merge-into-existing-entity pattern, mirrors :batch/upsert --
+      ;; updates the SAME sales-order record's own :fulfillment-status,
+      ;; never a new numbered record.
+      (= effect :sales-order/fulfillment-transition)
+      (let [order-id (first path)]
+        (swap! a update-in [:sales-orders order-id]
+               merge (assoc (dissoc value :to-status) :fulfillment-status (:to-status value))))
+
       ;; Domain-agnostic path: a raw record with an :id and no :effect
       ;; is written verbatim into the generic `records` map.
       (and (nil? effect) (:id record))
@@ -393,7 +520,8 @@
   (with-equipment [s equipment] (when (seq equipment) (swap! a assoc :equipment equipment)) s)
   (with-market-approvals [s approvals] (when (seq approvals) (swap! a assoc :market-entry-approvals approvals)) s)
   (with-channel-partners [s partners] (when (seq partners) (swap! a assoc :channel-partners partners)) s)
-  (with-raw-material-lots [s lots] (when (seq lots) (swap! a assoc :raw-material-lots lots)) s))
+  (with-raw-material-lots [s lots] (when (seq lots) (swap! a assoc :raw-material-lots lots)) s)
+  (with-regulatory-submissions [s subs] (when (seq subs) (swap! a assoc :regulatory-submissions subs)) s))
 
 (defn mem-store
   "A fresh, empty MemStore."
@@ -401,12 +529,15 @@
   (->MemStore (atom {:batches {} :equipment {} :maintenance {} :shipments {}
                       :packaging-designs {} :market-entries {} :marketing-claims {}
                       :market-entry-approvals {} :channel-partners {} :raw-material-lots {}
+                      :mes-readings {} :regulatory-submissions {} :sales-orders {}
                       :records {} :safety-concerns []
                       :ledger [] :maintenance-sequence 0 :maintenance-history []
                       :shipment-sequence 0 :shipment-history []
                       :packaging-design-sequence 0 :packaging-design-history []
                       :market-entry-sequence 0 :market-entry-history []
-                      :marketing-claim-sequence 0 :marketing-claim-history []})))
+                      :marketing-claim-sequence 0 :marketing-claim-history []
+                      :mes-reading-sequence 0 :mes-reading-history []
+                      :sales-order-sequence 0 :sales-order-history []})))
 
 (defn sample-data!
   "Seeds `s` (a MemStore) with a small, self-contained batch +
@@ -434,6 +565,15 @@
     test coverage (`RM-LOT-NAOCL-003` NOT verified/registered,
     `RM-LOT-NAOCL-004` CoA NOT received, `RM-LOT-NAOCL-005` an
     implausible CoA assay result).
+  - One `regulatory-submissions` record (`REG-IN-water-purification-
+    drops`, `:status :approved` with full evidence) -- see
+    `sample-regulatory-submissions` for why only ONE of the six
+    `:approved?` markets is backed by design (demonstrates both
+    branches of the new non-breaking market-approval-without-
+    submission WARNING).
+  No `mes-readings`/`sales-orders` are seeded -- both are created via
+  their own ops (`:record-mes-reading`/`:propose-sales-order`), not
+  pre-existing ground truth like equipment/batches/lots.
   Returns `s` (thread-friendly with `->`)."
   [s]
   (with-batches s (sample-batches))
@@ -441,6 +581,7 @@
   (with-market-approvals s (sample-market-approvals))
   (with-channel-partners s (sample-channel-partners))
   (with-raw-material-lots s (sample-raw-material-lots))
+  (with-regulatory-submissions s (sample-regulatory-submissions))
   s)
 
 ;; ----------------------------- back-compat aliases -----------------------------

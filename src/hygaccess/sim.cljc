@@ -36,6 +36,22 @@
   batch that does not have a passing CoA / in-threshold homogeneity on
   file (the GMP 'batch release' QA sign-off gate).
 
+  docs/adr/0003-mes-regulatory-sales-extensions.md then walks a Phase 1
+  MES integration (equipment/batch telemetry, mock -- see
+  `hygaccess.mes`), a regulatory-submission-status tracking chain (see
+  `hygaccess.regulatory`), and a sales quote/order/fulfillment workflow
+  (NO real payment, see `hygaccess.registry/sku-catalog`), plus their
+  own HARD-hold scenarios: an MES reading against an unverified batch,
+  an implausible pH/temperature/RPM/homogeneity reading, a SECOND MES
+  reading whose batch self-report no longer matches the first
+  already-committed reading, a regulatory-submission transition that
+  skips a state, one missing its required human evidence, a sales order
+  targeting a not-yet-approved market, one whose price does not match
+  the registered SKU, one with an implausible quantity, a fulfillment-
+  status update against a nonexistent order, one that skips a state,
+  and one that claims `:shipped` without an on-file `:coordinate-
+  shipment` record.
+
   Like every sibling actor's own demo, each check is exercised directly
   and independently below, one request per HARD-hold scenario -- the
   SAME 'exercise the failure mode directly, never only via a
@@ -124,6 +140,63 @@
       (println r)
       (println "-- human coordinator approves --")
       (println (approve! actor "t7")))
+
+    (println "== record-mes-reading mes-1 on batch-001 (clean, verified batch -> phase-3 auto-commit, mirrors log-production-batch's own administrative-logging posture) ==")
+    (println (exec-op actor "t8"
+                       {:op :record-mes-reading :effect :propose :subject "mes-1"
+                        :value {:batch-id "batch-001" :temperature-c 28.0 :ph 11.5
+                                :mixing-rpm 100.0 :mixing-homogeneity-cov-pct 2.1
+                                :source :mock-mes}}
+                       coordinator))
+
+    (println "== record-regulatory-submission-status reg-1 (IN/water-purification-drops draft -> counsel-review, escalates, approve) ==")
+    (let [r (exec-op actor "t9"
+                      {:op :record-regulatory-submission-status :effect :propose :subject "reg-1"
+                       :value {:market "IN" :product-type :water-purification-drops
+                               :to-status :counsel-review}}
+                      coordinator)]
+      (println r)
+      (println "-- human coordinator approves --")
+      (println (approve! actor "t9")))
+
+    (println "== propose-sales-order ord-1 (market-approved, price matches registered SKU -- escalates, approve) ==")
+    (let [r (exec-op actor "t10"
+                      {:op :propose-sales-order :effect :propose :subject "ord-1"
+                       :value {:buyer-ref "ngo-buyer-1"
+                               :sku "int.hygaccess.water-purification-drops"
+                               :quantity 200 :price-minor 350000 :market "IN"}}
+                      coordinator)]
+      (println r)
+      (println "-- human coordinator approves --")
+      (println (approve! actor "t10")))
+
+    (println "== update-fulfillment-status ord-1 (pending -> packed -- escalates, approve) ==")
+    (let [r (exec-op actor "t11"
+                      {:op :update-fulfillment-status :effect :propose :subject "ord-1"
+                       :value {:to-status :packed}}
+                      coordinator)]
+      (println r)
+      (println "-- human coordinator approves --")
+      (println (approve! actor "t11")))
+
+    (println "== coordinate-shipment ship-5 on batch-001 (real shipment record ord-1's fulfillment update will reference -- escalates, approve) ==")
+    (let [r (exec-op actor "t12"
+                      {:op :coordinate-shipment :effect :propose :subject "ship-5"
+                       :value {:batch-id "batch-001" :weight-kg 20.0
+                               :destination "ngo-distribution-hub-north"}}
+                      coordinator)]
+      (println r)
+      (println "-- human coordinator approves --")
+      (println (approve! actor "t12")))
+
+    (println "== update-fulfillment-status ord-1 (packed -> shipped, citing the real ship-5 record -- ground truth, not self-report -- escalates, approve) ==")
+    (let [r (exec-op actor "t13"
+                      {:op :update-fulfillment-status :effect :propose :subject "ord-1"
+                       :value {:to-status :shipped :shipment-id "ship-5"}}
+                      coordinator)]
+      (println r)
+      (println "-- human coordinator approves --")
+      (println (approve! actor "t13")))
 
     (println "\n== HARD-hold scenarios (every one settles without exception) ==\n")
 
@@ -294,6 +367,119 @@
                                 :destination "informal-retail-west"}}
                        coordinator))
 
+    (println "== record-mes-reading mes-h1 against batch-003 (UNVERIFIED/unregistered batch) -> HARD hold ==")
+    (println (exec-op actor "h24"
+                       {:op :record-mes-reading :effect :propose :subject "mes-h1"
+                        :value {:batch-id "batch-003" :mixing-homogeneity-cov-pct 2.0}}
+                       coordinator))
+
+    (println "== record-mes-reading mes-h2 against batch-001 with an implausible pH reading (15.0, outside 0-14) -> HARD hold ==")
+    (println (exec-op actor "h25"
+                       {:op :record-mes-reading :effect :propose :subject "mes-h2"
+                        :value {:batch-id "batch-001" :ph 15.0}}
+                       coordinator))
+
+    (println "== record-mes-reading mes-h3 against batch-001 with an implausible temperature reading (90C) -> HARD hold ==")
+    (println (exec-op actor "h26"
+                       {:op :record-mes-reading :effect :propose :subject "mes-h3"
+                        :value {:batch-id "batch-001" :temperature-c 90.0}}
+                       coordinator))
+
+    (println "== record-mes-reading mes-h4 against batch-001 with an implausible mixing-RPM reading (5000) -> HARD hold ==")
+    (println (exec-op actor "h27"
+                       {:op :record-mes-reading :effect :propose :subject "mes-h4"
+                        :value {:batch-id "batch-001" :mixing-rpm 5000.0}}
+                       coordinator))
+
+    (println "== record-mes-reading mes-h5 against batch-001 with a physically implausible homogeneity CoV (150%) -> HARD hold ==")
+    (println (exec-op actor "h28"
+                       {:op :record-mes-reading :effect :propose :subject "mes-h5"
+                        :value {:batch-id "batch-001" :mixing-homogeneity-cov-pct 150.0}}
+                       coordinator))
+
+    (println "== record-mes-reading mes-h6a on batch-002 (matches its own seeded 3.4% IPQC -- clean, becomes ground truth), then batch-002's own IPQC self-report is patched to 1.0% (still passes the 5.0% threshold on its own), then a SECOND MES reading mes-h6b now mismatches the FIRST reading's own ground truth -> HARD hold ==")
+    (println (exec-op actor "h29a"
+                       {:op :record-mes-reading :effect :propose :subject "mes-h6a"
+                        :value {:batch-id "batch-002" :mixing-homogeneity-cov-pct 3.4}}
+                       coordinator))
+    (println (exec-op actor "h29b"
+                       {:op :log-production-batch :effect :propose :subject "batch-002"
+                        :patch {:ipqc {:mixing-homogeneity-cov-pct 1.0}}}
+                       coordinator))
+    (println (exec-op actor "h29c"
+                       {:op :record-mes-reading :effect :propose :subject "mes-h6b"
+                        :value {:batch-id "batch-002" :mixing-homogeneity-cov-pct 1.0}}
+                       coordinator))
+
+    (println "== record-regulatory-submission-status reg-h1 skipping :counsel-review (:draft straight to :submitted) -> HARD hold ==")
+    (println (exec-op actor "h30"
+                       {:op :record-regulatory-submission-status :effect :propose :subject "reg-h1"
+                        :value {:market "SA" :product-type :surface-disinfectant :to-status :submitted}}
+                       coordinator))
+
+    (println "== record-regulatory-submission-status reg-h2 (:counsel-review -> :submitted) missing the human-evidence fields -> HARD hold ==")
+    (println (exec-op actor "h31a"
+                       {:op :record-regulatory-submission-status :effect :propose :subject "reg-h2"
+                        :value {:market "PK" :product-type :surface-disinfectant :to-status :counsel-review}}
+                       coordinator))
+    (println (approve! actor "h31a"))
+    (println (exec-op actor "h31b"
+                       {:op :record-regulatory-submission-status :effect :propose :subject "reg-h2"
+                        :value {:to-status :submitted}}
+                       coordinator))
+
+    (println "== propose-sales-order ord-h1 targeting PK (not yet approved) -> HARD hold ==")
+    (println (exec-op actor "h32"
+                       {:op :propose-sales-order :effect :propose :subject "ord-h1"
+                        :value {:buyer-ref "ngo-buyer-2" :sku "int.hygaccess.water-purification-drops"
+                                :quantity 10 :price-minor 350000 :market "PK"}}
+                       coordinator))
+
+    (println "== propose-sales-order ord-h2 with a price that does not match the registered SKU price -> HARD hold ==")
+    (println (exec-op actor "h33"
+                       {:op :propose-sales-order :effect :propose :subject "ord-h2"
+                        :value {:buyer-ref "ngo-buyer-2" :sku "int.hygaccess.water-purification-drops"
+                                :quantity 10 :price-minor 1 :market "IN"}}
+                       coordinator))
+
+    (println "== propose-sales-order ord-h3 with an implausible negative quantity -> HARD hold ==")
+    (println (exec-op actor "h34"
+                       {:op :propose-sales-order :effect :propose :subject "ord-h3"
+                        :value {:buyer-ref "ngo-buyer-2" :sku "int.hygaccess.water-purification-drops"
+                                :quantity -5 :price-minor 350000 :market "IN"}}
+                       coordinator))
+
+    (println "== update-fulfillment-status against a nonexistent order (ord-does-not-exist) -> HARD hold ==")
+    (println (exec-op actor "h35"
+                       {:op :update-fulfillment-status :effect :propose :subject "ord-does-not-exist"
+                        :value {:to-status :packed}}
+                       coordinator))
+
+    (println "== update-fulfillment-status ord-1 (already :shipped from the happy-path walk above) -- an invalid backwards transition to :packed -> HARD hold ==")
+    (println (exec-op actor "h36"
+                       {:op :update-fulfillment-status :effect :propose :subject "ord-1"
+                        :value {:to-status :packed}}
+                       coordinator))
+
+    (println "== propose-sales-order ord-h4 + update-fulfillment-status claiming :shipped with NO on-file :coordinate-shipment record -> HARD hold ==")
+    (let [r (exec-op actor "h37a"
+                      {:op :propose-sales-order :effect :propose :subject "ord-h4"
+                       :value {:buyer-ref "ngo-buyer-3" :sku "int.hygaccess.water-purification-drops"
+                               :quantity 10 :price-minor 350000 :market "IN"}}
+                      coordinator)]
+      (println r)
+      (println (approve! actor "h37a")))
+    (let [r (exec-op actor "h37b"
+                      {:op :update-fulfillment-status :effect :propose :subject "ord-h4"
+                       :value {:to-status :packed}}
+                      coordinator)]
+      (println r)
+      (println (approve! actor "h37b")))
+    (println (exec-op actor "h37c"
+                       {:op :update-fulfillment-status :effect :propose :subject "ord-h4"
+                        :value {:to-status :shipped :shipment-id "ship-does-not-exist"}}
+                       coordinator))
+
     (println "\n== audit ledger ==")
     (doseq [f (store/ledger db)] (println f))
 
@@ -310,4 +496,13 @@
     (doseq [r (store/market-entry-history db)] (println r))
 
     (println "\n== draft marketing-claim records ==")
-    (doseq [r (store/marketing-claim-history db)] (println r))))
+    (doseq [r (store/marketing-claim-history db)] (println r))
+
+    (println "\n== draft MES/CFD telemetry-reading records ==")
+    (doseq [r (store/mes-reading-history db)] (println r))
+
+    (println "\n== regulatory-submission-status records (STATUS TRACKING ONLY -- not a real filing) ==")
+    (doseq [r (store/all-regulatory-submissions db)] (println r))
+
+    (println "\n== draft sales-order records (NO real payment -- price is a plain reference number) ==")
+    (doseq [r (store/all-sales-orders db)] (println r))))

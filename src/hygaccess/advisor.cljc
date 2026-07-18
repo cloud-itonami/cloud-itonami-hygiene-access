@@ -12,7 +12,12 @@
   coordination proposal against a production batch, drafts a
   packaging-design proposal, drafts a market-entry proposal (target-
   country + price-point + distribution-channel + channel-partner
-  bundle), and drafts a marketing-claim proposal. CRITICAL: it is a
+  bundle), drafts a marketing-claim proposal, drafts an MES/CFD
+  telemetry-reading log entry (`hygaccess.mes`), drafts a regulatory-
+  submission-status transition (`hygaccess.regulatory`, STATUS TRACKING
+  ONLY -- never a real filing), and drafts a sales quote/order or
+  fulfillment-status transition (never a real sale, payment, or fund
+  movement). CRITICAL: it is a
   smart-but-untrusted advisor. It returns a *proposal* (with a
   rationale + the fields it cited), never a committed record and NEVER
   a real formulation/filling-line actuation, freight dispatch,
@@ -207,6 +212,92 @@
      :stake      (governor/stake-for {:op :propose-marketing-claim})
      :confidence (if substantiated? 0.9 0.3)}))
 
+(defn- record-mes-reading
+  "Draft an MES/CFD-sourced equipment/batch telemetry-reading log entry
+  tied to an existing production batch. The advisor passes through
+  whatever reading it was given (from a `hygaccess.mes/MESSource` call
+  -- mock in this build -- or `hygaccess.mes/cfd-result->telemetry-
+  reading`'s adapted CFD output) -- it does NOT invent sensor values,
+  and `hygaccess.governor` NEVER trusts them as-is: it independently
+  re-verifies the referenced batch's own verified/registered status,
+  each sensor value's physical plausibility, and (if a prior MES
+  reading already exists for this batch) cross-validates the batch's
+  own self-reported IPQC homogeneity against it."
+  [db {:keys [subject value]}]
+  (let [batch-id (:batch-id value)
+        b (store/batch db batch-id)
+        ready? (and b (registry/batch-ready? b))]
+    {:summary    (str subject " 向けMES/CFDテレメトリ記録 (batch=" batch-id ")")
+     :rationale  (if b
+                   (str "batch-verified?=" (registry/batch-verified? b)
+                        " batch-registered?=" (registry/batch-registered? b)
+                        " mixing-homogeneity-cov-pct=" (:mixing-homogeneity-cov-pct value))
+                   (str batch-id " が見つかりません"))
+     :cites      (if b [batch-id] [])
+     :effect     :mes-reading/record
+     :value      value
+     :stake      nil
+     :confidence (if ready? 0.9 0.3)}))
+
+(defn- record-regulatory-submission-status
+  "Draft a regulatory-submission-STATUS-TRACKING transition for a
+  (market, product-type) pair -- NOT a real filing with any regulatory
+  system. The advisor passes through the caller's own claimed
+  `:to-status` and evidence fields -- it does NOT invent or default
+  evidence, and `hygaccess.governor` NEVER trusts the transition or
+  evidence completeness as self-reported: it independently re-derives
+  both from `hygaccess.regulatory`'s closed transition table and the
+  proposal's own value. Always human-gated (never in any phase's
+  `:auto` set, mirroring `:schedule-maintenance`)."
+  [_db {:keys [subject value]}]
+  {:summary    (str subject " 向け規制提出ステータス遷移提案 (" (:market value) "/" (:product-type value)
+                    " -> " (:to-status value) ")")
+   :rationale  "この actor は実際の規制当局への提出を代行しない -- 人間が供給した証跡のみを記録する"
+   :cites      [:market :product-type :to-status]
+   :effect     :regulatory-submission/transition
+   :value      value
+   :stake      nil
+   :confidence 0.7})
+
+(defn- propose-sales-order
+  "Draft a quote/purchase-order record (buyer reference + SKU +
+  quantity + price) -- NEVER a real sale, payment, or fund movement.
+  The advisor passes through the caller's own claimed price -- it does
+  NOT invent one, and `hygaccess.governor` NEVER trusts it: it
+  independently re-verifies the price against the SKU's own registered
+  `hygaccess.registry/sku-catalog` price, the target market's own
+  approval, and the quantity's own physical plausibility."
+  [_db {:keys [subject value]}]
+  (let [{:keys [sku price-minor]} value
+        registered-price (registry/sku-price-for sku)]
+    {:summary    (str subject " 向け販売見積/発注提案 (" sku " x" (:quantity value) ")")
+     :rationale  (str "registered-price=" registered-price " claimed-price=" price-minor)
+     :cites      [:sku :quantity :price-minor :market]
+     :effect     :sales-order/propose
+     :value      value
+     :stake      nil
+     :confidence (if (= registered-price price-minor) 0.9 0.3)}))
+
+(defn- update-fulfillment-status
+  "Draft a fulfillment-status transition for an existing sales-order
+  record. The advisor passes through the caller's own claimed
+  `:to-status` (and, for a transition to `:shipped`, the referenced
+  `:shipment-id`) -- it does NOT invent either, and `hygaccess.governor`
+  NEVER trusts them: it independently re-verifies the order exists, the
+  transition is valid, and (for `:shipped`) that the referenced
+  shipment record actually exists in the store."
+  [db {:keys [subject value]}]
+  (let [order (store/sales-order db subject)]
+    {:summary    (str subject " 向け配送状況更新提案 (-> " (:to-status value) ")")
+     :rationale  (if order
+                   (str "existing-fulfillment-status=" (:fulfillment-status order))
+                   (str subject " の発注記録が見つかりません"))
+     :cites      (if order [subject] [])
+     :effect     :sales-order/fulfillment-transition
+     :value      value
+     :stake      nil
+     :confidence (if order 0.8 0.2)}))
+
 (defn infer
   "Route a request to the right proposal generator.
   request: {:op kw :effect :propose :subject id ...op-specific...}"
@@ -219,6 +310,10 @@
     :propose-packaging-design   (propose-packaging-design db request)
     :propose-market-entry       (propose-market-entry db request)
     :propose-marketing-claim    (propose-marketing-claim db request)
+    :record-mes-reading         (record-mes-reading db request)
+    :record-regulatory-submission-status (record-regulatory-submission-status db request)
+    :propose-sales-order        (propose-sales-order db request)
+    :update-fulfillment-status  (update-fulfillment-status db request)
     {:summary "未対応の操作" :rationale (str op) :cites []
      :effect :noop :stake nil :confidence 0.0}))
 
@@ -241,7 +336,9 @@
        ":effect(:batch/upsert|:maintenance/schedule|"
        ":safety-concern/flag|:shipment/propose|"
        ":packaging-design/propose|:market-entry/propose|"
-       ":marketing-claim/propose) "
+       ":marketing-claim/propose|:mes-reading/record|"
+       ":regulatory-submission/transition|:sales-order/propose|"
+       ":sales-order/fulfillment-transition) "
        ":value(操作固有のパッチ/値) "
        ":stake(:coordination/safety-concern|:coordination/new-market-entry|"
        ":coordination/marketing-claim-change|"
@@ -257,7 +354,10 @@
        "発生の危険)。濃度が効力窓の範囲外のバッチを適合と偽って報告しては"
        "いけません。未承認国への市場参入、上限超過の価格設定、未実証の"
        "マーケティングクレーム、未ライセンスの流通チャネルパートナーを"
-       "提案してはいけません。"))
+       "提案してはいけません。実際の決済・送金・課金を一切行っては"
+       "いけません(価格は記録上の参照数値に過ぎません)。実際の規制当局への"
+       "提出を代行してはいけません(ステータス記録のみ)。実在装置の"
+       "制御・作動を一切行ってはいけません(MESは記録専用の疑似実装です)。"))
 
 (defn- facts-for [st {:keys [op subject value]}]
   (case op
@@ -271,6 +371,11 @@
                                   :channel-partner (and (:channel-partner-id value)
                                                         (store/channel-partner st (:channel-partner-id value)))}
     :propose-marketing-claim    {:substantiated-claims (registry/claims-for (:product-type value))}
+    :record-mes-reading         {:batch (store/batch st (:batch-id value))}
+    :record-regulatory-submission-status {:existing (store/regulatory-submission st subject)}
+    :propose-sales-order        {:sku-catalog-entry (get registry/sku-catalog (:sku value))
+                                  :market-approval (and (:market value) (store/market-approval st (:market value)))}
+    :update-fulfillment-status  {:order (store/sales-order st subject)}
     {}))
 
 (defn- parse-proposal

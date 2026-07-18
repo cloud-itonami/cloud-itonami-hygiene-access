@@ -10,7 +10,13 @@
   validation, in-process-QC (IPQC) mixing-homogeneity validation,
   Certificate-of-Analysis (CoA) / batch-release sign-off validation,
   and draft maintenance-schedule/shipment-coordination/packaging-
-  design/market-entry/marketing-claim record construction.
+  design/market-entry/marketing-claim record construction. Also carries
+  the SKU price-catalog ground truth and fulfillment-status state
+  machine for the sales quote/order/fulfillment workflow added in
+  `docs/adr/0003-mes-regulatory-sales-extensions.md` -- see
+  `hygaccess.mes` for the Manufacturing Execution System integration
+  contract and `hygaccess.regulatory` for the regulatory-submission-
+  status state machine added in that same extension.
 
   Two active ingredients, sodium hypochlorite (NaOCl, 次亜塩素酸ナトリウム)
   and isopropylmethylphenol (IPMP / o-cymen-5-ol), formulated into three
@@ -628,6 +634,92 @@
   (and (coa-pass? batch)
        (homogeneity-within-threshold? (:mixing-homogeneity-cov-pct (:ipqc batch)))))
 
+;; ----------------------------- commercial catalog (SKU price ground truth) -----------------------------
+;;
+;; `:propose-sales-order` NEVER moves real money -- see README `What
+;; this actor does NOT do`. A price here is a plain reference number on
+;; a record, nothing more: no payment gateway, no processor, no
+;; balance/wallet/ledger-of-funds concept. This table exists purely so
+;; a proposed order's own claimed price can be independently checked
+;; against a ground-truth catalog number, the same "ground truth, not
+;; self-report" discipline as every other check in this repo.
+
+(def sku-catalog
+  "Closed SKU -> `{:product-type .. :price-minor ..}` ground-truth
+  catalog, MIRRORING `products.edn` at repo root (`:product/id`
+  `:product/price-minor` `:hygaccess.product/product-type`) -- kept
+  here as `.cljc` pure data (matching every other closed table in this
+  namespace) rather than read from the EDN file at runtime, since
+  `src/` is portable JVM/cljs/nbb and this repo's own established
+  convention is closed-table-as-code, not file-I/O-at-runtime (see
+  `price-ceiling-minor`/`efficacy-window-pct`).
+  `hygaccess.governor/sales-order-price-mismatch-violations` reads THIS
+  table, never a `:propose-sales-order` proposal's own self-reported
+  price, as ground truth. `registry-test.cljc` asserts this table stays
+  in sync with `products.edn`'s own four SKUs."
+  {"int.hygaccess.water-purification-drops"
+   {:product-type :water-purification-drops :price-minor 350000}
+   "int.hygaccess.surface-disinfectant"
+   {:product-type :surface-disinfectant :price-minor 700000}
+   "int.hygaccess.antibacterial-soap-bar"
+   {:product-type :antibacterial-soap :price-minor 150000}
+   "int.hygaccess.antibacterial-liquid-soap"
+   {:product-type :antibacterial-soap :price-minor 250000}})
+
+(defn sku-known? [sku] (contains? sku-catalog sku))
+(defn sku-price-for [sku] (:price-minor (get sku-catalog sku)))
+(defn sku-product-type-for [sku] (:product-type (get sku-catalog sku)))
+
+(defn sku-price-mismatch?
+  "Ground-truth check: does `price-minor` (a `:propose-sales-order`
+  proposal's own claimed price) differ from `sku`'s own registered
+  price in `sku-catalog`? An unknown SKU is treated as a mismatch -- no
+  ground-truth price exists to confirm against, so it can never be
+  taken on faith."
+  [sku price-minor]
+  (let [registered (sku-price-for sku)]
+    (or (nil? registered) (not= registered price-minor))))
+
+(def max-plausible-order-quantity
+  "100000 units -- this actor's own documented REPRESENTATIVE ceiling
+  for a single BOP go-to-market order. An NGO/government/institutional
+  bulk buyer placing an order for more than 100,000 individual
+  bottles/sachets/bars in ONE order is implausible for this program's
+  own scale and is treated as fabricated/data-entry-error data, not a
+  real order."
+  100000)
+
+(defn order-quantity-valid?
+  "Physically plausible order quantity -- a positive number at or below
+  `max-plausible-order-quantity`, mirrors `off-spec-rate-valid?`'s own
+  'reject a physically implausible reading' discipline."
+  [quantity]
+  (boolean
+   (and (number? quantity)
+        (pos? quantity)
+        (<= (double quantity) (double max-plausible-order-quantity)))))
+
+;; ----------------------------- fulfillment-status state machine -----------------------------
+
+(def fulfillment-statuses
+  #{:pending :packed :shipped :delivered :cancelled})
+
+(def fulfillment-transitions
+  "Closed ground-truth transition table: `:pending` -> `:packed` ->
+  `:shipped` -> `:delivered`, OR `:cancelled` from any PRE-SHIPPED state
+  (`:pending` or `:packed`). Once `:shipped`, the physical parcel is
+  already in transit -- 'cancelling' after dispatch is a real-world
+  return/refusal process, not a same-op cancellation, so this table
+  deliberately does NOT allow `:shipped`/`:delivered` -> `:cancelled`."
+  {:pending   #{:packed :cancelled}
+   :packed    #{:shipped :cancelled}
+   :shipped   #{:delivered}
+   :delivered #{}
+   :cancelled #{}})
+
+(defn fulfillment-transition-valid? [from to]
+  (boolean (contains? (get fulfillment-transitions from #{}) to)))
+
 ;; ----------------------------- draft record construction -----------------------------
 
 (defn- unsigned-certificate
@@ -742,6 +834,44 @@
                 "immutable" true}]
     {"record" record "claim_number" claim-number
      "certificate" (unsigned-certificate "MarketingClaim" claim-number claim-number)}))
+
+(defn register-mes-reading
+  "Validate + construct the MES/CFD-TELEMETRY-READING DRAFT -- a logged
+  equipment/batch telemetry reading (mock in this build -- see
+  `hygaccess.mes`) tied to an existing production batch. Pure function
+  -- does not poll any real plant MES; it builds the RECORD a plant
+  coordinator would keep."
+  [reading-id sequence]
+  (when-not (and reading-id (not= reading-id ""))
+    (throw (ex-info "mes-reading: reading_id required" {})))
+  (when (< sequence 0)
+    (throw (ex-info "mes-reading: sequence must be >= 0" {})))
+  (let [reading-number (str "MES-" (zero-pad sequence 6))
+        record {"record_id" reading-number
+                "kind" "mes-reading-draft"
+                "reading_id" reading-id
+                "immutable" true}]
+    {"record" record "reading_number" reading-number
+     "certificate" (unsigned-certificate "MESReading" reading-number reading-number)}))
+
+(defn register-sales-order
+  "Validate + construct the SALES-ORDER (quote/purchase-order) DRAFT --
+  a proposed buyer-reference + SKU + quantity + price bundle. Pure
+  function -- does NOT execute any real sale, payment, or invoice
+  settlement (see README `What this actor does NOT do`); it builds the
+  DRAFT record a go-to-market coordinator would keep."
+  [order-id sequence]
+  (when-not (and order-id (not= order-id ""))
+    (throw (ex-info "sales-order: order_id required" {})))
+  (when (< sequence 0)
+    (throw (ex-info "sales-order: sequence must be >= 0" {})))
+  (let [order-number (str "ORD-" (zero-pad sequence 6))
+        record {"record_id" order-number
+                "kind" "sales-order-draft"
+                "order_id" order-id
+                "immutable" true}]
+    {"record" record "order_number" order-number
+     "certificate" (unsigned-certificate "SalesOrder" order-number order-number)}))
 
 (defn append [history result]
   (conj (vec history) (get result "record")))

@@ -18,7 +18,8 @@
   (:require [clojure.test :refer [deftest is testing]]
             [langgraph.graph :as g]
             [hygaccess.store :as store]
-            [hygaccess.operation :as op]))
+            [hygaccess.operation :as op]
+            [hygaccess.governor :as governor]))
 
 (defn- fresh []
   (let [db (-> (store/mem-store) (store/sample-data!))]
@@ -513,3 +514,310 @@
                           :patch {:product-type :fabricated-product}} coordinator)
       (is (= 2 (count (store/ledger db)))
           "one commit + one hold, both recorded"))))
+
+;; ============================================================
+;; docs/adr/0003-mes-regulatory-sales-extensions.md
+;; ============================================================
+
+;; ----------------------------- MES (Manufacturing Execution System) reading -----------------------------
+
+(deftest mes-reading-batch-not-verified-is-held
+  (testing "an MES/CFD reading tied to an UNVERIFIED/unregistered batch -> HOLD"
+    (let [[db actor] (fresh)
+          res (exec-op actor "m1" {:op :record-mes-reading :effect :propose :subject "mes-h1"
+                                   :value {:batch-id "batch-003" :mixing-homogeneity-cov-pct 2.0}}
+                       coordinator)]
+      (is (= :hold (get-in res [:state :disposition])))
+      (is (not= :interrupted (:status res)))
+      (is (some #{:mes-reading-batch-not-verified} (-> (store/ledger db) last :basis)))
+      (is (empty? (store/mes-reading-history db))))))
+
+(deftest mes-reading-ph-implausible-is-held
+  (let [[db actor] (fresh)
+        res (exec-op actor "m2" {:op :record-mes-reading :effect :propose :subject "mes-h2"
+                                 :value {:batch-id "batch-001" :ph 15.0}}
+                     coordinator)]
+    (is (= :hold (get-in res [:state :disposition])))
+    (is (some #{:mes-reading-ph-implausible} (-> (store/ledger db) last :basis)))
+    (is (empty? (store/mes-reading-history db)))))
+
+(deftest mes-reading-temperature-implausible-is-held
+  (let [[db actor] (fresh)
+        res (exec-op actor "m3" {:op :record-mes-reading :effect :propose :subject "mes-h3"
+                                 :value {:batch-id "batch-001" :temperature-c 90.0}}
+                     coordinator)]
+    (is (= :hold (get-in res [:state :disposition])))
+    (is (some #{:mes-reading-temperature-implausible} (-> (store/ledger db) last :basis)))
+    (is (empty? (store/mes-reading-history db)))))
+
+(deftest mes-reading-rpm-implausible-is-held
+  (let [[db actor] (fresh)
+        res (exec-op actor "m4" {:op :record-mes-reading :effect :propose :subject "mes-h4"
+                                 :value {:batch-id "batch-001" :mixing-rpm 5000.0}}
+                     coordinator)]
+    (is (= :hold (get-in res [:state :disposition])))
+    (is (some #{:mes-reading-rpm-implausible} (-> (store/ledger db) last :basis)))
+    (is (empty? (store/mes-reading-history db)))))
+
+(deftest mes-reading-homogeneity-implausible-is-held
+  (testing "physically impossible CoV (>100%) -- distinct from the 5.0% GMP acceptance threshold checked elsewhere"
+    (let [[db actor] (fresh)
+          res (exec-op actor "m5" {:op :record-mes-reading :effect :propose :subject "mes-h5"
+                                   :value {:batch-id "batch-001" :mixing-homogeneity-cov-pct 150.0}}
+                       coordinator)]
+      (is (= :hold (get-in res [:state :disposition])))
+      (is (some #{:mes-reading-homogeneity-implausible} (-> (store/ledger db) last :basis)))
+      (is (empty? (store/mes-reading-history db))))))
+
+(deftest mes-reading-clean-auto-commits
+  (testing "a clean MES/CFD reading against a verified/registered batch, no prior reading on file -> phase-3 auto-commit, mirrors :log-production-batch's own administrative-logging posture"
+    (let [[db actor] (fresh)
+          res (exec-op actor "m6" {:op :record-mes-reading :effect :propose :subject "mes-h6"
+                                   :value {:batch-id "batch-002" :temperature-c 25.0 :ph 12.0
+                                           :mixing-rpm 100.0 :mixing-homogeneity-cov-pct 1.0
+                                           :source :mock-mes}}
+                       coordinator)]
+      (is (= :commit (get-in res [:state :disposition])))
+      (is (not= :interrupted (:status res)))
+      (is (= "batch-002" (:batch-id (store/mes-reading db "mes-h6"))))
+      (is (= 1 (count (store/mes-reading-history db)))))))
+
+(deftest mes-reading-homogeneity-mismatch-is-held
+  (testing "a SECOND MES/CFD reading for a batch whose own self-reported IPQC homogeneity no longer matches the FIRST already-committed MES reading -> HOLD -- closes the ground-truth loop, never self-report alone once independent MES ground truth exists"
+    (let [[db actor] (fresh)
+          r1 (exec-op actor "mm1" {:op :record-mes-reading :effect :propose :subject "mes-mm-1"
+                                   :value {:batch-id "batch-001" :temperature-c 28.0 :ph 11.5
+                                           :mixing-rpm 100.0 :mixing-homogeneity-cov-pct 2.1
+                                           :source :mock-mes}}
+                      coordinator)]
+      (is (= :commit (get-in r1 [:state :disposition]))
+          "2.1% matches batch-001's own seeded IPQC self-report -- clean, auto-commits, becomes ground truth on file")
+      (exec-op actor "mm2" {:op :log-production-batch :effect :propose :subject "batch-001"
+                            :patch {:ipqc {:ph-check-pass? true :assay-mid-batch-pct 1.0
+                                           :mixing-homogeneity-cov-pct 4.0}}}
+               coordinator)
+      (is (= 4.0 (get-in (store/batch db "batch-001") [:ipqc :mixing-homogeneity-cov-pct]))
+          "4.0% is still within the 5.0% GMP threshold ON ITS OWN -- auto-commits -- but now diverges from the prior MES ground-truth reading (2.1%) by more than the reconciliation tolerance (0.5)")
+      (let [r3 (exec-op actor "mm3" {:op :record-mes-reading :effect :propose :subject "mes-mm-2"
+                                     :value {:batch-id "batch-001" :temperature-c 28.0
+                                             :mixing-homogeneity-cov-pct 4.0 :source :mock-mes}}
+                        coordinator)]
+        (is (= :hold (get-in r3 [:state :disposition])))
+        (is (some #{:mes-reading-homogeneity-mismatch} (-> (store/ledger db) last :basis)))
+        (is (= 1 (count (store/mes-reading-history db)))
+            "the mismatched second reading never lands in the SSoT -- only mes-mm-1 is on file")))))
+
+;; ----------------------------- regulatory-submission-status tracking -----------------------------
+
+(deftest regulatory-transition-invalid-is-held
+  (testing "skipping :counsel-review (draft straight to :submitted) -> HOLD -- no skipping states"
+    (let [[db actor] (fresh)
+          res (exec-op actor "r1" {:op :record-regulatory-submission-status :effect :propose :subject "reg-h1"
+                                   :value {:market "SA" :product-type :surface-disinfectant
+                                           :to-status :submitted}}
+                       coordinator)]
+      (is (= :hold (get-in res [:state :disposition])))
+      (is (not= :interrupted (:status res)))
+      (is (some #{:regulatory-transition-invalid} (-> (store/ledger db) last :basis)))
+      (is (nil? (store/regulatory-submission db "reg-h1"))))))
+
+(deftest regulatory-evidence-missing-is-held
+  (testing "a VALID transition into a consequential status (:submitted) without the three human-evidence fields -> HOLD -- never defaulted or auto-generated"
+    (let [[db actor] (fresh)
+          _ (exec-op actor "r2a" {:op :record-regulatory-submission-status :effect :propose :subject "reg-h2"
+                                  :value {:market "PK" :product-type :surface-disinfectant
+                                          :to-status :counsel-review}}
+                     coordinator)
+          _ (approve! actor "r2a")
+          res (exec-op actor "r2b" {:op :record-regulatory-submission-status :effect :propose :subject "reg-h2"
+                                    :value {:to-status :submitted}}
+                       coordinator)]
+      (is (= :counsel-review (:status (store/regulatory-submission db "reg-h2"))) "the earlier valid transition DID land")
+      (is (= :hold (get-in res [:state :disposition])))
+      (is (not= :interrupted (:status res)))
+      (is (some #{:regulatory-evidence-missing} (-> (store/ledger db) last :basis)))
+      (is (not (some #{:regulatory-transition-invalid} (-> (store/ledger db) last :basis)))
+          "isolated to the evidence gate -- counsel-review -> submitted IS a valid transition")
+      (is (= :counsel-review (:status (store/regulatory-submission db "reg-h2")))
+          "the evidence-less transition never lands in the SSoT"))))
+
+(deftest regulatory-submission-draft-to-counsel-review-always-needs-approval
+  (testing "a non-consequential, clean transition still always escalates -- never in any phase's :auto set"
+    (let [[db actor] (fresh)
+          res (exec-op actor "r3" {:op :record-regulatory-submission-status :effect :propose :subject "reg-h3"
+                                   :value {:market "EG" :product-type :antibacterial-soap
+                                           :to-status :counsel-review}}
+                       coordinator)]
+      (is (= :interrupted (:status res)))
+      (let [r2 (approve! actor "r3")]
+        (is (= :commit (get-in r2 [:state :disposition])))
+        (is (= :counsel-review (:status (store/regulatory-submission db "reg-h3"))))))))
+
+(deftest regulatory-submission-submitted-with-full-evidence-still-needs-approval
+  (testing "a consequential transition WITH complete human evidence clears the HARD gates but still always escalates (never auto-committed)"
+    (let [[db actor] (fresh)
+          _ (exec-op actor "r4a" {:op :record-regulatory-submission-status :effect :propose :subject "reg-h4"
+                                  :value {:market "AE" :product-type :surface-disinfectant
+                                          :to-status :counsel-review}}
+                     coordinator)
+          _ (approve! actor "r4a")
+          res (exec-op actor "r4b" {:op :record-regulatory-submission-status :effect :propose :subject "reg-h4"
+                                    :value {:to-status :submitted :filed-by "local regulatory counsel"
+                                            :filing-date "2026-07-18" :agency-reference "GSO-REF-2026-0099"}}
+                       coordinator)]
+      (is (= :interrupted (:status res)))
+      (let [r2 (approve! actor "r4b")]
+        (is (= :commit (get-in r2 [:state :disposition])))
+        (is (= :submitted (:status (store/regulatory-submission db "reg-h4"))))
+        (is (= "local regulatory counsel" (:filed-by (store/regulatory-submission db "reg-h4"))))))))
+
+(deftest market-approval-without-submission-warnings-flags-unbacked-approved-markets
+  (testing "the non-breaking WARN-only consistency check: sample-data! backs only IN with an :approved regulatory-submission -- the other five :approved? markets are flagged, never HARD-blocked"
+    (let [db (-> (store/mem-store) (store/sample-data!))
+          verdict (governor/check {:op :log-production-batch :effect :propose :subject "batch-001"}
+                                  {} {:effect :batch/upsert :value {} :confidence 1.0} db)]
+      (is (false? (:hard? verdict)) "a warning never HARD-blocks an unrelated proposal")
+      (is (= #{"AE" "BD" "ID" "PH" "SA"} (set (map :market (:warnings verdict)))))
+      (is (not (contains? (set (map :market (:warnings verdict))) "IN"))
+          "IN is backed by the seeded REG-IN-water-purification-drops :approved record"))))
+
+(deftest market-approval-without-submission-warnings-empty-when-fully-backed
+  (testing "once every :approved? market also has an :approved regulatory-submission on file, the warning list is empty"
+    (let [db (-> (store/mem-store) (store/sample-data!))]
+      (doseq [country ["IN" "BD" "ID" "PH" "SA" "AE"]]
+        (store/commit-record! db {:effect :regulatory-submission/transition :path [(str "REG-" country "-extra")]
+                                  :value {:market country :product-type :water-purification-drops
+                                          :to-status :approved}}))
+      (let [verdict (governor/check {:op :log-production-batch :effect :propose :subject "batch-001"}
+                                    {} {:effect :batch/upsert :value {} :confidence 1.0} db)]
+        (is (= [] (:warnings verdict)))))))
+
+;; ----------------------------- sales quote/order (NO payment, NO fund movement) -----------------------------
+
+(deftest sales-order-market-not-approved-is-held
+  (let [[db actor] (fresh)
+        res (exec-op actor "s1" {:op :propose-sales-order :effect :propose :subject "ord-h1"
+                                 :value {:buyer-ref "ngo-buyer-1"
+                                         :sku "int.hygaccess.water-purification-drops"
+                                         :quantity 10 :price-minor 350000 :market "PK"}}
+                     coordinator)]
+    (is (= :hold (get-in res [:state :disposition])))
+    (is (some #{:sales-order-market-not-approved} (-> (store/ledger db) last :basis)))
+    (is (empty? (store/sales-order-history db)))))
+
+(deftest sales-order-price-mismatch-is-held
+  (let [[db actor] (fresh)
+        res (exec-op actor "s2" {:op :propose-sales-order :effect :propose :subject "ord-h2"
+                                 :value {:buyer-ref "ngo-buyer-1"
+                                         :sku "int.hygaccess.water-purification-drops"
+                                         :quantity 10 :price-minor 1 :market "IN"}}
+                     coordinator)]
+    (is (= :hold (get-in res [:state :disposition])))
+    (is (some #{:sales-order-price-mismatch} (-> (store/ledger db) last :basis)))
+    (is (empty? (store/sales-order-history db)))))
+
+(deftest sales-order-quantity-invalid-is-held
+  (let [[db actor] (fresh)
+        res (exec-op actor "s3" {:op :propose-sales-order :effect :propose :subject "ord-h3"
+                                 :value {:buyer-ref "ngo-buyer-1"
+                                         :sku "int.hygaccess.water-purification-drops"
+                                         :quantity -5 :price-minor 350000 :market "IN"}}
+                     coordinator)]
+    (is (= :hold (get-in res [:state :disposition])))
+    (is (some #{:sales-order-quantity-invalid} (-> (store/ledger db) last :basis)))
+    (is (empty? (store/sales-order-history db)))))
+
+(deftest sales-order-clean-always-needs-approval
+  (testing "market-approved + price-matches-registered-SKU + plausible quantity is never auto-eligible -- always escalates"
+    (let [[db actor] (fresh)
+          res (exec-op actor "s4" {:op :propose-sales-order :effect :propose :subject "ord-h4"
+                                   :value {:buyer-ref "ngo-buyer-9"
+                                           :sku "int.hygaccess.water-purification-drops"
+                                           :quantity 500 :price-minor 350000 :market "IN"}}
+                       coordinator)]
+      (is (= :interrupted (:status res)))
+      (let [r2 (approve! actor "s4")]
+        (is (= :commit (get-in r2 [:state :disposition])))
+        (is (= 1 (count (store/sales-order-history db))))
+        (is (= :pending (:fulfillment-status (store/sales-order db "ord-h4"))))))))
+
+;; ----------------------------- fulfillment-status -----------------------------
+
+(defn- clean-order! [actor tid subject]
+  (exec-op actor tid {:op :propose-sales-order :effect :propose :subject subject
+                      :value {:buyer-ref "ngo-buyer-9"
+                              :sku "int.hygaccess.water-purification-drops"
+                              :quantity 500 :price-minor 350000 :market "IN"}}
+           coordinator)
+  (approve! actor tid))
+
+(deftest fulfillment-order-not-found-is-held
+  (let [[db actor] (fresh)
+        res (exec-op actor "f1" {:op :update-fulfillment-status :effect :propose :subject "ord-does-not-exist"
+                                 :value {:to-status :packed}}
+                     coordinator)]
+    (is (= :hold (get-in res [:state :disposition])))
+    (is (some #{:fulfillment-order-not-found} (-> (store/ledger db) last :basis)))))
+
+(deftest fulfillment-transition-invalid-is-held
+  (testing "skipping :packed/:shipped (pending straight to :delivered) -> HOLD -- order DOES exist, isolates the transition-table gate"
+    (let [[db actor] (fresh)
+          _ (clean-order! actor "f2a" "ord-h5")
+          res (exec-op actor "f2b" {:op :update-fulfillment-status :effect :propose :subject "ord-h5"
+                                    :value {:to-status :delivered}}
+                       coordinator)]
+      (is (= :hold (get-in res [:state :disposition])))
+      (is (some #{:fulfillment-transition-invalid} (-> (store/ledger db) last :basis)))
+      (is (not (some #{:fulfillment-order-not-found} (-> (store/ledger db) last :basis))))
+      (is (= :pending (:fulfillment-status (store/sales-order db "ord-h5")))))))
+
+(deftest fulfillment-shipment-not-on-file-is-held
+  (testing "a valid :packed -> :shipped transition citing a shipment-id with no corresponding :coordinate-shipment record -> HOLD"
+    (let [[db actor] (fresh)
+          _ (clean-order! actor "f3a" "ord-h6")
+          _ (exec-op actor "f3b" {:op :update-fulfillment-status :effect :propose :subject "ord-h6"
+                                  :value {:to-status :packed}}
+                     coordinator)
+          _ (approve! actor "f3b")
+          res (exec-op actor "f3c" {:op :update-fulfillment-status :effect :propose :subject "ord-h6"
+                                    :value {:to-status :shipped :shipment-id "ship-does-not-exist"}}
+                       coordinator)]
+      (is (= :packed (:fulfillment-status (store/sales-order db "ord-h6"))) "the earlier valid transition DID land")
+      (is (= :hold (get-in res [:state :disposition])))
+      (is (some #{:fulfillment-shipment-not-on-file} (-> (store/ledger db) last :basis)))
+      (is (not (some #{:fulfillment-transition-invalid} (-> (store/ledger db) last :basis)))
+          "isolated to the shipment-on-file gate -- packed -> shipped IS a valid transition")
+      (is (= :packed (:fulfillment-status (store/sales-order db "ord-h6")))))))
+
+(deftest fulfillment-clean-transition-to-packed-always-needs-approval
+  (let [[db actor] (fresh)
+        _ (clean-order! actor "f4a" "ord-h7")
+        res (exec-op actor "f4b" {:op :update-fulfillment-status :effect :propose :subject "ord-h7"
+                                  :value {:to-status :packed}}
+                     coordinator)]
+    (is (= :interrupted (:status res)))
+    (let [r2 (approve! actor "f4b")]
+      (is (= :commit (get-in r2 [:state :disposition])))
+      (is (= :packed (:fulfillment-status (store/sales-order db "ord-h7")))))))
+
+(deftest fulfillment-shipped-with-existing-shipment-record-always-needs-approval
+  (testing "ground truth, not self-report: :shipped only clears the gate once a REAL :coordinate-shipment record exists on file for the referenced shipment-id"
+    (let [[db actor] (fresh)
+          _ (exec-op actor "f5-ship" {:op :coordinate-shipment :effect :propose :subject "ship-fh1"
+                                      :value {:batch-id "batch-001" :weight-kg 5.0
+                                              :destination "ngo-distribution-hub-north"}}
+                     coordinator)
+          _ (approve! actor "f5-ship")
+          _ (clean-order! actor "f5a" "ord-h8")
+          _ (exec-op actor "f5b" {:op :update-fulfillment-status :effect :propose :subject "ord-h8"
+                                  :value {:to-status :packed}}
+                     coordinator)
+          _ (approve! actor "f5b")
+          res (exec-op actor "f5c" {:op :update-fulfillment-status :effect :propose :subject "ord-h8"
+                                    :value {:to-status :shipped :shipment-id "ship-fh1"}}
+                       coordinator)]
+      (is (some? (store/shipment db "ship-fh1")) "the referenced shipment DOES exist on file")
+      (is (= :interrupted (:status res)))
+      (let [r2 (approve! actor "f5c")]
+        (is (= :commit (get-in r2 [:state :disposition])))
+        (is (= :shipped (:fulfillment-status (store/sales-order db "ord-h8"))))))))
