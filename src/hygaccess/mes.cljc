@@ -428,6 +428,19 @@
   without reaching into `dcs.model`/`dcs.alarm` internals directly
   (mirrors `mock-plant-io`'s own `reading-overrides` convention).
 
+  `on-iteration` (optional, default nil -- no behavior change for any
+  existing caller) -- a `(fn [trace-entry])` called once per iteration,
+  with that iteration's own `trace-entry` map (same shape as one entry
+  of `:trace` below), AFTER the tick's command is decided but BEFORE the
+  next CFD step is applied. Purely a caller-supplied observation hook
+  (this fn's own control flow, return value, and determinism are
+  unchanged regardless of whether one is supplied) -- exists so a caller
+  can mirror each iteration's live values onto a `dcs.ports/IFieldIO` for
+  external observability (see `hygaccess.modbus-demo`, a demonstration/
+  integration-test capability, NOT part of this actor's governed op
+  surface -- exposing a live protocol server isn't itself a proposal/
+  decision `hygaccess.governor` needs to arbitrate).
+
   Returns `{:final-reading .. :final-cov .. :converged? .. :iterations-
   run .. :alarm-triggered? .. :trace [..]}` -- `:trace` is the FULL
   per-iteration audit record (sensor reading, pH/temperature used, PID
@@ -435,7 +448,7 @@
   source `:pid`/`:alarm-override`) this build keeps as IPQC evidence
   (see `hygaccess.governor`'s new control-loop-alarm visibility check
   and README.md)."
-  [{:keys [tank process ph-override temperature-override initial-rpm-override max-iterations]
+  [{:keys [tank process ph-override temperature-override initial-rpm-override max-iterations on-iteration]
     :or {tank (process/default-tank) process process/default-process
          max-iterations control-loop-max-iterations}}]
   (let [initial-rpm (double (or initial-rpm-override
@@ -464,7 +477,8 @@
                          :alarm-active? alarm-active? :alarm-trips (:trips alarm-eval)
                          :command-issued command :command-source command-source}
             trace' (conj trace trace-entry)
-            converged? (registry/homogeneity-within-threshold? cov)]
+            converged? (registry/homogeneity-within-threshold? cov)
+            _ (when on-iteration (on-iteration trace-entry))]
         (if (or converged? (>= i max-iterations))
           {:final-reading reading :final-cov cov :converged? converged?
            :iterations-run (inc i)
