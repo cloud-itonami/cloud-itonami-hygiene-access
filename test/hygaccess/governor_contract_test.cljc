@@ -582,6 +582,51 @@
       (is (= "batch-002" (:batch-id (store/mes-reading db "mes-h6"))))
       (is (= 1 (count (store/mes-reading-history db)))))))
 
+;; ----------------------------- control-loop alarm visibility/escalation (NEW this build) -----------------------------
+
+(deftest mes-reading-control-loop-alarm-triggered-escalates-even-though-otherwise-clean
+  (testing "an MES reading whose own :control-loop-alarm-triggered? is true escalates to a human
+           EVEN THOUGH every other field is plausible/in-spec and would otherwise phase-3
+           auto-commit (mes-reading-clean-auto-commits above) -- check 40, independently
+           re-derived from the proposal's own value, not merely from :stake"
+    (let [[db actor] (fresh)
+          res (exec-op actor "ca1" {:op :record-mes-reading :effect :propose :subject "mes-ca1"
+                                    :value {:batch-id "batch-002" :temperature-c 25.0 :ph 12.0
+                                            :mixing-rpm 100.0 :mixing-homogeneity-cov-pct 1.0
+                                            :control-loop-alarm-triggered? true
+                                            :source :mock-mes}}
+                       coordinator)]
+      (is (= :interrupted (:status res)) "escalated to a human, never silently auto-committed")
+      (is (empty? (store/mes-reading-history db)) "not yet on file until a human decides")
+      (let [r2 (approve! actor "ca1")]
+        (is (= :commit (get-in r2 [:state :disposition])) "the human may approve -- SOFT, not a HARD block")
+        (is (= "batch-002" (:batch-id (store/mes-reading db "mes-ca1"))))
+        (is (true? (:control-loop-alarm-triggered? (store/mes-reading db "mes-ca1"))))))))
+
+(deftest mes-reading-control-loop-alarm-not-triggered-does-not-force-escalation
+  (testing "the SAME otherwise-clean reading with :control-loop-alarm-triggered? false stays auto-committing -- the new check is additive, not a regression on the existing clean-auto-commit path"
+    (let [[_db actor] (fresh)
+          res (exec-op actor "ca2" {:op :record-mes-reading :effect :propose :subject "mes-ca2"
+                                    :value {:batch-id "batch-002" :temperature-c 25.0 :ph 12.0
+                                            :mixing-rpm 100.0 :mixing-homogeneity-cov-pct 1.0
+                                            :control-loop-alarm-triggered? false
+                                            :source :mock-mes}}
+                       coordinator)]
+      (is (= :commit (get-in res [:state :disposition])))
+      (is (not= :interrupted (:status res))))))
+
+(deftest log-production-batch-control-loop-alarm-triggered-in-ipqc-escalates
+  (testing "the SAME visibility/escalation fact, on a :log-production-batch's own EFFECTIVE :ipqc record"
+    (let [[db actor] (fresh)
+          res (exec-op actor "ca3" {:op :log-production-batch :effect :propose :subject "batch-001"
+                                    :patch {:ipqc {:mixing-homogeneity-cov-pct 2.0
+                                                   :control-loop-alarm-triggered? true}}}
+                       coordinator)]
+      (is (= :interrupted (:status res)) "escalated -- an alarm-overridden batch never silently looks clean")
+      (let [r2 (approve! actor "ca3")]
+        (is (= :commit (get-in r2 [:state :disposition])))
+        (is (true? (get-in (store/batch db "batch-001") [:ipqc :control-loop-alarm-triggered?])))))))
+
 (deftest mes-reading-homogeneity-mismatch-is-held
   (testing "a SECOND MES/CFD reading for a batch whose own self-reported IPQC homogeneity no longer matches the FIRST already-committed MES reading -> HOLD -- closes the ground-truth loop, never self-report alone once independent MES ground truth exists"
     (let [[db actor] (fresh)

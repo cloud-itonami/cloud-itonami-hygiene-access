@@ -215,14 +215,19 @@
 (defn- record-mes-reading
   "Draft an MES/CFD-sourced equipment/batch telemetry-reading log entry
   tied to an existing production batch. The advisor passes through
-  whatever reading it was given (from a `hygaccess.mes/MESSource` call
-  -- mock in this build -- or `hygaccess.mes/cfd-result->telemetry-
-  reading`'s adapted CFD output) -- it does NOT invent sensor values,
-  and `hygaccess.governor` NEVER trusts them as-is: it independently
-  re-verifies the referenced batch's own verified/registered status,
-  each sensor value's physical plausibility, and (if a prior MES
-  reading already exists for this batch) cross-validates the batch's
-  own self-reported IPQC homogeneity against it."
+  whatever reading it was given (from a `hygaccess.mes/mock-plant-io`
+  call in this build, via `hygaccess.mes/batch-telemetry-reading`) --
+  it does NOT invent sensor values, and `hygaccess.governor` NEVER
+  trusts them as-is: it independently re-verifies the referenced
+  batch's own verified/registered status, each sensor value's physical
+  plausibility, and (if a prior MES reading already exists for this
+  batch) cross-validates the batch's own self-reported IPQC
+  homogeneity against it. `:stake` is derived via `governor/stake-for`
+  (`:coordination/control-loop-alarm-triggered` when the reading's own
+  `:control-loop-alarm-triggered?` is true, else nil) -- a well-behaved
+  signal for a well-behaved advisor, though `hygaccess.governor/check`
+  independently re-derives the SAME fact regardless (see that ns's
+  check 40), so a forged/omitted `:stake` here cannot suppress it."
   [db {:keys [subject value]}]
   (let [batch-id (:batch-id value)
         b (store/batch db batch-id)
@@ -231,12 +236,13 @@
      :rationale  (if b
                    (str "batch-verified?=" (registry/batch-verified? b)
                         " batch-registered?=" (registry/batch-registered? b)
-                        " mixing-homogeneity-cov-pct=" (:mixing-homogeneity-cov-pct value))
+                        " mixing-homogeneity-cov-pct=" (:mixing-homogeneity-cov-pct value)
+                        " control-loop-alarm-triggered?=" (:control-loop-alarm-triggered? value))
                    (str batch-id " が見つかりません"))
      :cites      (if b [batch-id] [])
      :effect     :mes-reading/record
      :value      value
-     :stake      nil
+     :stake      (governor/stake-for {:op :record-mes-reading :value value})
      :confidence (if ready? 0.9 0.3)}))
 
 (defn- record-regulatory-submission-status

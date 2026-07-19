@@ -517,6 +517,65 @@
                                               SOFT: the human may
                                               approve.
 
+  40. Control-loop alarm triggered
+      (visibility + escalation, NEW this
+      build)                               -- for `:record-mes-reading`
+                                              AND `:log-production-
+                                              batch`, INDEPENDENTLY
+                                              re-derive the EFFECTIVE
+                                              `:control-loop-alarm-
+                                              triggered?` fact (the
+                                              proposal's own `:value`
+                                              for `:record-mes-reading`,
+                                              else the EFFECTIVE
+                                              `:ipqc` for `:log-
+                                              production-batch`) and, if
+                                              true, force escalation
+                                              REGARDLESS of the
+                                              proposal's own self-
+                                              reported `:stake` -- this
+                                              does NOT go through
+                                              `stake-for`/`:stake`
+                                              alone (which a mis-wired
+                                              or compromised advisor
+                                              could omit/forge), it is
+                                              re-derived directly in
+                                              `check` from the
+                                              proposal's own EFFECTIVE
+                                              data, the same ground-
+                                              truth-not-self-report
+                                              discipline every HARD
+                                              check above already
+                                              applies. A batch/reading
+                                              whose real `hygaccess.mes`
+                                              closed-loop control trace
+                                              (PID + ISA-18.2 alarm +
+                                              real CFD, see that ns)
+                                              ever fired an alarm
+                                              override during mixing
+                                              must never silently look
+                                              identical to one that
+                                              converged cleanly under
+                                              normal PID control. SOFT
+                                              (not a HARD block, this
+                                              build's own judgment call
+                                              -- see `docs/adr` -- an
+                                              alarm-overridden batch
+                                              still physically converged
+                                              in spec by the time
+                                              mixing finished, so it is
+                                              not itself a violation;
+                                              it IS grave enough that a
+                                              human go-to-market/QA
+                                              coordinator must
+                                              independently see it and
+                                              decide, mirroring this
+                                              gate's own existing 'ask
+                                              a human, they may
+                                              approve' posture for
+                                              every other high-stakes
+                                              signal).
+
   Plus ONE non-blocking, non-escalating WARN-only signal, `:warnings`
   in `check`'s return map (`hygaccess.regulatory/market-approval-
   without-submission-warnings`): surfaces, for every country
@@ -563,11 +622,18 @@
   proposals are the ops in this domain that always demand human eyes
   regardless of confidence; a market-entry price sitting near its own
   ceiling is an additional high-stakes signal on top of the
-  always-high-stakes `:coordination/new-market-entry`."
+  always-high-stakes `:coordination/new-market-entry`.
+  `:coordination/control-loop-alarm-triggered` (NEW this build, see
+  check 40 above) flags a batch/reading whose real `hygaccess.mes`
+  closed-loop control trace fired an ISA-18.2 alarm override during
+  mixing -- forced independently in `check` below regardless of
+  whether `stake-for` was even consulted, but ALSO derivable here for a
+  well-behaved advisor that calls `stake-for` when drafting."
   #{:coordination/safety-concern
     :coordination/new-market-entry
     :coordination/marketing-claim-change
-    :coordination/price-change-above-threshold})
+    :coordination/price-change-above-threshold
+    :coordination/control-loop-alarm-triggered})
 
 ;; ----------------------------- helpers -----------------------------
 
@@ -1170,7 +1236,12 @@
   future caller omits or forges `:stake`, `hygaccess.phase`
   independently never adds `:flag-safety-concern`/`:propose-market-
   entry`/`:propose-marketing-claim` to any phase's `:auto` set, so
-  escalation does not depend solely on this self-reported field."
+  escalation does not depend solely on this self-reported field. For
+  `:record-mes-reading`, a `:control-loop-alarm-triggered? true` value
+  ALSO derives `:coordination/control-loop-alarm-triggered` here (for a
+  well-behaved advisor) -- but `check` below re-derives the SAME fact
+  independently regardless of what this fn (or the advisor) produced,
+  see `control-loop-alarm-stakes?`."
   [{:keys [op value]}]
   (case op
     :flag-safety-concern :coordination/safety-concern
@@ -1178,7 +1249,33 @@
                              :coordination/price-change-above-threshold
                              :coordination/new-market-entry)
     :propose-marketing-claim :coordination/marketing-claim-change
+    :record-mes-reading (when (true? (:control-loop-alarm-triggered? value))
+                           :coordination/control-loop-alarm-triggered)
     nil))
+
+(defn- control-loop-alarm-stakes?
+  "Check 40's independent re-derivation (NOT via `stake-for`/`:stake`):
+  for `:record-mes-reading`, does the proposal's own `:value` declare
+  `:control-loop-alarm-triggered? true`? For `:log-production-batch`,
+  does the EFFECTIVE `:ipqc` (patch's own value, else the batch's
+  already-recorded value -- same `effective` helper every other
+  ground-truth check above uses) declare it? Either is grave enough to
+  force escalation in `check` below REGARDLESS of what `:stake` the
+  proposal happens to carry -- mirrors every HARD ground-truth check's
+  own 'never taken on the advisor's self-report' discipline, applied
+  here to a SOFT (escalate, not block) signal because an alarm-
+  overridden batch still physically converged in spec by the time
+  mixing finished (see docstring item 40 above for the full reasoning)."
+  [{:keys [op subject]} proposal st]
+  (case op
+    :record-mes-reading
+    (true? (:control-loop-alarm-triggered? (:value proposal)))
+    :log-production-batch
+    (let [patch (:value proposal)
+          existing (store/batch st subject)
+          ipqc (effective :ipqc patch existing)]
+      (true? (:control-loop-alarm-triggered? ipqc)))
+    false))
 
 (defn check
   "Censors a HygieneAccessAdvisor proposal against the governor rules.
@@ -1229,7 +1326,8 @@
                            (fulfillment-shipment-not-on-file-violations request proposal st)))
         conf (:confidence proposal 0.0)
         low? (< conf confidence-floor)
-        stakes? (boolean (high-stakes (:stake proposal)))
+        stakes? (or (boolean (high-stakes (:stake proposal)))
+                    (control-loop-alarm-stakes? request proposal st))
         hard? (boolean (seq hard))
         warnings (regulatory/market-approval-without-submission-warnings
                   (map :country (filter registry/market-approved? (store/all-market-approvals st)))
