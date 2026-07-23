@@ -1,0 +1,31 @@
+name: CI
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: orgs/cloud-itonami/cloud-itonami-hygiene-access
+      - uses: actions/checkout@v4
+        with: {repository: kotoba-lang/langchain, path: orgs/kotoba-lang/langchain}
+      - uses: actions/checkout@v4
+        with: {repository: kotoba-lang/langgraph, path: orgs/kotoba-lang/langgraph}
+      - uses: actions/checkout@v4
+        with: {repository: kotoba-lang/dcs, path: orgs/kotoba-lang/dcs}
+      - uses: actions/checkout@v4
+        with: {repository: kotoba-lang/kami-app-hygaccess-plant, path: orgs/kotoba-lang/kami-app-hygaccess-plant}
+      - uses: actions/checkout@v4
+        with: {repository: kotoba-lang/crm, path: orgs/kotoba-lang/crm}
+      - uses: actions/checkout@v4
+        with: {repository: cloud-itonami/cloud-itonami-regulatory-tracker, path: orgs/cloud-itonami/cloud-itonami-regulatory-tracker}
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "21" }
+      - uses: DeLaGuardo/setup-clojure@13.4
+        with: { cli: latest, github-token: "${{ secrets.GITHUB_TOKEN }}" }
+      - name: lint
+        working-directory: orgs/cloud-itonami/cloud-itonami-hygiene-access
+        run: clojure -M:lint
+      - name: test
+        working-directory: orgs/cloud-itonami/cloud-itonami-hygiene-access
+        run: clojure -M:test
