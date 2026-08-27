@@ -31,9 +31,9 @@
                     (is (= advisor/murakumo-alias-url url))
                     (is (= :get method))
                     {:status 200 :body "irrelevant-in-this-fake"})
-          json-read (fn [_body] {:endpoint "https://qwen-gad.gftd.ai/v1/chat/completions"
+          json-read (fn [_body] {:endpoint "https://infer.murakumo.cloud/v1/chat/completions"
                                   :alias-for "qwen3.6-35b-a3b"})]
-      (is (= {:endpoint "https://qwen-gad.gftd.ai/v1/chat/completions" :model "qwen3.6-35b-a3b"}
+      (is (= {:endpoint "https://infer.murakumo.cloud/v1/chat/completions" :model "qwen3.6-35b-a3b"}
              (advisor/resolve-murakumo-endpoint {:http-fn http-fn :json-read json-read}))))))
 
 (deftest alias-resolution-without-alias-for-still-falls-back-to-the-literal-alias-name
