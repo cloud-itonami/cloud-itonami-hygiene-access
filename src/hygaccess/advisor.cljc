@@ -55,7 +55,7 @@
   were compromised."
   (:require #?(:clj  [clojure.edn :as edn]
                :cljs [cljs.reader :as edn])
-            [clojure.string :as str]
+            [kotoba.lang.text :as str]
             [hygaccess.registry :as registry]
             [hygaccess.governor :as governor]
             [hygaccess.store :as store]
