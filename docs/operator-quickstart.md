@@ -37,7 +37,7 @@ Publish: enable GitHub Pages on `main` `/docs`, or any static host.
 ## 4. Where the Governor sits
 
 - Blueprint governor key: `hygiene-access-operations-governor`
-- Source path: `src/hygaccess/governor.cljc`
+- Source path: `src/hygaccess/governor.kotoba`
 - Pattern: advise → govern → phase-gate → commit | escalate | hold (itonami actor / ADR-2607011000)
 
 ## 5. Where the commercial catalog sits
