@@ -39,7 +39,7 @@ Restated for `README.md`'s own "four hard boundaries" list (updated, not weakene
 
 ## Consequences
 
-(+) A concrete, independently-verifiable, end-to-end proof that this actor's already-real closed-loop control simulation is wire-protocol-compatible with real SCADA/HMI tooling — not merely an internal function-call assertion: `test/hygaccess/modbus_integration_test.clj` polls a real, separate `com.digitalpetri.modbus.client.ModbusTcpClient` connection at every control-loop iteration and asserts the externally-read value matches the loop's own internal state for that exact tick.
+(+) A concrete, independently-verifiable, end-to-end proof that this actor's already-real closed-loop control simulation is wire-protocol-compatible with real SCADA/HMI tooling — not merely an internal function-call assertion: `test/hygaccess/modbus_integration_test.kotoba` polls a real, separate `com.digitalpetri.modbus.client.ModbusTcpClient` connection at every control-loop iteration and asserts the externally-read value matches the loop's own internal state for that exact tick.
 
 (+) `run-homogeneity-control-loop`'s new `:on-iteration` hook is a small, generically useful extension point (any caller — a future dashboard, a different protocol demo — can observe the loop's live trajectory) that cost zero behavior change to the loop itself.
 
