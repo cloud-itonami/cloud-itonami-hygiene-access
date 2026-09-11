@@ -21,7 +21,7 @@ cd cloud-itonami-hygiene-access
 ## 2. Run tests
 
 ```bash
-clojure -M:test
+kbb -M:test
 ```
 
 Expect green if maturity is `implemented`. Fix failures before operating.

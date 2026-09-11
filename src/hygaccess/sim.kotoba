@@ -1,5 +1,5 @@
 (ns hygaccess.sim
-  "Demo driver -- `clojure -M:dev:run`. Walks a clean commercialization
+  "Demo driver -- `kbb -M:dev:run`. Walks a clean commercialization
   program through intake (formulation-batch logging, auto-commit) ->
   maintenance scheduling (escalate/approve) -> safety-concern flag
   (escalate/approve) -> shipment coordination (escalate/approve) ->

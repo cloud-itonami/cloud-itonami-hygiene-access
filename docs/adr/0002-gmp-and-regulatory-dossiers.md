@@ -173,10 +173,10 @@ different number.
 
 ## Verification
 
-- `cloud-itonami-hygiene-access`: `clojure -M:test` green — 104 tests
+- `cloud-itonami-hygiene-access`: `kbb -M:test` green — 104 tests
   containing 362 assertions, 0 failures, 0 errors (up from ADR-0001's 87
   tests / 283 assertions; none of the original tests changed).
-  `clojure -M:lint` clean (0 errors, 0 warnings). `clojure -M:dev:run`
+  `kbb -M:lint` clean (0 errors, 0 warnings). `kbb -M:dev:run`
   demo extended to exercise all five new HARD-hold scenarios directly
   (raw-material-lot-not-verified, raw-material-lot-coa-not-received,
   raw-material-lot-assay-implausible, mixing-homogeneity-cov-exceeds-
