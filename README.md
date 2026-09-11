@@ -143,16 +143,16 @@ In a REAL deployment, an `:approved` regulatory-submission-status record here is
 # hygaccess.modbus-integration-test (docs/adr/0006), which starts a
 # real, loopback-only Modbus TCP server -- no network exposure beyond
 # 127.0.0.1, but binds a local port during that test.
-clojure -M:test
+kbb -M:test
 
 # Run tests via the workspace :dev override alias (equivalent, kept for sibling-repo parity)
-clojure -M:dev:test
+kbb -M:dev:test
 
 # Run the demo
-clojure -M:dev:run
+kbb -M:dev:run
 
 # Lint
-clojure -M:lint
+kbb -M:lint
 ```
 
 ## Status
