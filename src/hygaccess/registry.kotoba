@@ -97,7 +97,7 @@
   - `[:sodium-hypochlorite :surface-disinfectant]` 0.05-0.5% --
     matches `etzhayyim/com-etzhayyim-yakushi`'s own already-declared
     Wave 2 window for its `sodium-hypochlorite` surface-use-class
-    product (README.md `効力窓 (G21)` table / CLAUDE.md `G21
+    product (README.md `効力窓 (G21)` table / AGENTS.md `G21
     efficacy-window`) -- reused verbatim here for cross-fleet
     consistency rather than re-derived.
   - `[:isopropylmethylphenol :antibacterial-soap]` 0.1-0.3% --
