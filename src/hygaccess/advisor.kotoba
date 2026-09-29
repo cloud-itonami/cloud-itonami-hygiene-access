@@ -421,7 +421,7 @@
 
 ;; ----------------------------- real LLM wiring: murakumo-main alias (opt-in only) -----------------------------
 ;;
-;; Per this workspace's fleet-wide convention (root CLAUDE.md "LLM モデル
+;; Per this workspace's fleet-wide convention (root AGENTS.md "LLM モデル
 ;;選択 -- murakumo-main alias", ADR-2607173100): never hardcode a
 ;; concrete model id anywhere a model choice needs to track a live fleet
 ;; swap. `murakumo-chat-model` below is the REAL, opt-in alternative to
@@ -433,7 +433,7 @@
 ;; exactly like any other `ChatModel` -- no change to `llm-advisor`
 ;; itself was needed, only this constructor.
 ;;
-;; Resolution order (mirrors CLAUDE.md's "①env/引数 override →
+;; Resolution order (mirrors AGENTS.md's "①env/引数 override →
 ;; ②murakumo-main alias 解決 → ③fallback は「endpoint のみ」を焼く"
 ;; verbatim, and reuses BOTH access patterns that section documents):
 ;;   1. `:override-endpoint`/`:override-model` (explicit caller/env
@@ -447,7 +447,7 @@
 ;;   3. If step 2 is unreachable/fails: fall back to the stable
 ;;      `murakumo-messages-url` gateway with the LITERAL alias string
 ;;      `"murakumo-main"` as `:model` -- the worker resolves it
-;;      server-side (CLAUDE.md: "`api.murakumo.cloud/v1/messages` へは
+;;      server-side (AGENTS.md: "`api.murakumo.cloud/v1/messages` へは
 ;;      `model=\"murakumo-main\"` を送ってよい"). This is the "endpoint
 ;;      only" fallback -- it never bakes in a CONCRETE model id, only
 ;;      the alias name itself, so it keeps tracking whatever model is
